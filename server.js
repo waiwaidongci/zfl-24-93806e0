@@ -135,7 +135,15 @@ const page = `<!doctype html>
     .success-list { margin-top:8px; }
     .success-item { background:#f0faf4; border:1px solid #a8d5ba; border-radius:6px; padding:8px 10px; margin-top:6px; font-size:13px; color:var(--green); }
     .header-actions { display:flex; gap:8px; }
-    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} }
+    .filter-bar { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:14px; }
+    .filter-bar h3 { margin:0 0 12px; font-size:15px; }
+    .filter-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; align-items:end; }
+    .filter-item label { display:block; margin:0 0 5px; color:var(--muted); font-size:13px; }
+    .filter-item select { width:100%; border:1px solid var(--line); border-radius:6px; padding:9px; font:inherit; }
+    .filter-actions { display:flex; gap:8px; }
+    .filter-actions button { width:100%; }
+    .filter-summary { margin-top:10px; padding-top:10px; border-top:1px dashed var(--line); color:var(--muted); font-size:13px; }
+    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} }
   </style>
 </head>
 <body>
@@ -154,6 +162,29 @@ const page = `<!doctype html>
     <section>
       <div class="toolbar"><input id="search" placeholder="输入足环号查询血统"><button id="searchBtn">查询</button></div>
       <div class="panel" id="detail"></div>
+      <div class="filter-bar">
+        <h3>档案筛选</h3>
+        <div class="filter-grid">
+          <div class="filter-item">
+            <label>鸽舍</label>
+            <select id="filterLoft"><option value="">全部鸽舍</option></select>
+          </div>
+          <div class="filter-item">
+            <label>鸽主</label>
+            <select id="filterOwner"><option value="">全部鸽主</option></select>
+          </div>
+          <div class="filter-item">
+            <label>羽色</label>
+            <select id="filterColor"><option value="">全部羽色</option></select>
+          </div>
+          <div class="filter-item">
+            <div class="filter-actions">
+              <button id="resetFilter" class="secondary">重置筛选</button>
+            </div>
+          </div>
+        </div>
+        <div class="filter-summary" id="filterSummary"></div>
+      </div>
       <div class="section grid" id="cards"></div>
     </section>
   </main>
@@ -192,16 +223,59 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     const cards = document.querySelector("#cards");
     const detail = document.querySelector("#detail");
     const search = document.querySelector("#search");
+    const filterLoft = document.querySelector("#filterLoft");
+    const filterOwner = document.querySelector("#filterOwner");
+    const filterColor = document.querySelector("#filterColor");
+    const filterSummary = document.querySelector("#filterSummary");
     let pigeons = [];
     let currentRingNo = null;
+    let filters = { loft: "", owner: "", color: "" };
     async function api(path, options) {
       const res = await fetch(path, options && options.body ? { ...options, headers:{ "Content-Type":"application/json" } } : options);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "请求失败");
       return data;
     }
+    function getUniqueValues(arr, key) {
+      const values = new Set();
+      arr.forEach(item => { if (item[key] && item[key].trim()) values.add(item[key].trim()); });
+      return Array.from(values).sort();
+    }
+    function updateFilterOptions() {
+      const lofts = getUniqueValues(pigeons, "loft");
+      const owners = getUniqueValues(pigeons, "owner");
+      const colors = getUniqueValues(pigeons, "color");
+      const currentLoft = filterLoft.value;
+      const currentOwner = filterOwner.value;
+      const currentColor = filterColor.value;
+      filterLoft.innerHTML = '<option value="">全部鸽舍</option>' + lofts.map(v => '<option value="'+v+'"'+(v===currentLoft?' selected':'')+'>'+v+'</option>').join("");
+      filterOwner.innerHTML = '<option value="">全部鸽主</option>' + owners.map(v => '<option value="'+v+'"'+(v===currentOwner?' selected':'')+'>'+v+'</option>').join("");
+      filterColor.innerHTML = '<option value="">全部羽色</option>' + colors.map(v => '<option value="'+v+'"'+(v===currentColor?' selected':'')+'>'+v+'</option>').join("");
+    }
+    function applyFilters() {
+      return pigeons.filter(p => {
+        if (filters.loft && p.loft !== filters.loft) return false;
+        if (filters.owner && p.owner !== filters.owner) return false;
+        if (filters.color && p.color !== filters.color) return false;
+        return true;
+      });
+    }
+    function updateFilterSummary(filtered) {
+      const parts = [];
+      if (filters.loft) parts.push("鸽舍：" + filters.loft);
+      if (filters.owner) parts.push("鸽主：" + filters.owner);
+      if (filters.color) parts.push("羽色：" + filters.color);
+      const total = pigeons.length;
+      if (parts.length === 0) {
+        filterSummary.textContent = "共 " + total + " 只档案（未筛选）";
+      } else {
+        filterSummary.textContent = "筛选条件：" + parts.join(" | ") + "，共显示 " + filtered.length + " / " + total + " 只";
+      }
+    }
     function renderCards() {
-      cards.innerHTML = pigeons.map(p => {
+      const filtered = applyFilters();
+      updateFilterSummary(filtered);
+      cards.innerHTML = filtered.map(p => {
         const vaccineSummary = p.vaccines.length ? p.vaccines.map(v => '<div class="vaccine-item"><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">'+v.remark+'</span>':'')+'</div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
         return '<article class="card"><h3>'+p.ringNo+'</h3><span class="pill">'+p.owner+'</span><div class="meta">'+p.color+' · '+p.loft+'</div><div>父：'+(p.fatherRing || "未登记")+'</div><div>母：'+(p.motherRing || "未登记")+'</div><div class="section"><b>疫苗接种</b><div class="vaccine-list">'+vaccineSummary+'</div><label>疫苗名称</label><input data-vname="'+p.ringNo+'" placeholder="如新城疫、鸽痘"><label>接种日期</label><input data-vdate="'+p.ringNo+'" type="date"><label>备注</label><input data-vremark="'+p.ringNo+'" placeholder="选填"><button data-vaccine="'+p.ringNo+'">保存疫苗记录</button></div><label>录入转让</label><input data-to="'+p.ringNo+'" placeholder="新归属人"><button data-transfer="'+p.ringNo+'">保存转让</button><label>归巢成绩</label><input data-race="'+p.ringNo+'" placeholder="赛事/距离/名次，如200公里/200/6"><button data-score="'+p.ringNo+'">保存成绩</button></article>';
       }).join("");
@@ -232,6 +306,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     }
     async function load(){
       pigeons = await api("/api/pigeons");
+      updateFilterOptions();
       renderCards();
       if (currentRingNo) {
         try {
@@ -255,6 +330,16 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       }
     };
     document.querySelector("#reload").onclick = load;
+    filterLoft.onchange = () => { filters.loft = filterLoft.value; renderCards(); };
+    filterOwner.onchange = () => { filters.owner = filterOwner.value; renderCards(); };
+    filterColor.onchange = () => { filters.color = filterColor.value; renderCards(); };
+    document.querySelector("#resetFilter").onclick = () => {
+      filters = { loft: "", owner: "", color: "" };
+      filterLoft.value = "";
+      filterOwner.value = "";
+      filterColor.value = "";
+      renderCards();
+    };
     form.onsubmit = async event => {
       event.preventDefault();
       await api("/api/pigeons", { method:"POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
