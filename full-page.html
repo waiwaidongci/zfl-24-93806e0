@@ -1,244 +1,4 @@
-import http from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const dbPath = join(__dirname, "data", "pigeons.json");
-const port = Number(process.env.PORT || 3024);
-
-const seed = {
-  pigeons: [
-    { ringNo: "CHN-2026-001", owner: "北岸棚", fatherRing: "CHN-2022-188", motherRing: "CHN-2023-512", color: "灰", loft: "北岸A棚", vaccines: [{ date: "2026-04-01", name: "新城疫", remark: "首次免疫" }], transfers: [{ date: "2026-04-15", from: "育种棚", to: "北岸棚" }], races: [{ date: "2026-06-01", event: "120公里训放", distance: 120, returnTime: "10:42", rank: 18 }] },
-    { ringNo: "CHN-2022-188", owner: "育种棚", fatherRing: "", motherRing: "", color: "雨点", loft: "种鸽棚", vaccines: [], transfers: [], races: [] },
-    { ringNo: "CHN-2023-512", owner: "育种棚", fatherRing: "", motherRing: "", color: "红轮", loft: "种鸽棚", vaccines: [], transfers: [], races: [] }
-  ],
-  breedingPlans: [],
-  raceEvents: []
-};
-
-async function loadDb() {
-  if (!existsSync(dbPath)) {
-    await mkdir(dirname(dbPath), { recursive: true });
-    await writeFile(dbPath, JSON.stringify(seed, null, 2));
-  }
-  const db = JSON.parse(await readFile(dbPath, "utf8"));
-  if (!db.breedingPlans) db.breedingPlans = [];
-  if (!db.raceEvents) db.raceEvents = [];
-  return db;
-}
-async function saveDb(db) { await writeFile(dbPath, JSON.stringify(db, null, 2)); }
-async function body(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  return chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
-}
-function sendJson(res, status, data) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(data, null, 2));
-}
-function relation(db, ringNo) {
-  const pigeon = db.pigeons.find(item => item.ringNo === ringNo);
-  if (!pigeon) return null;
-  const father = db.pigeons.find(item => item.ringNo === pigeon.fatherRing) || null;
-  const mother = db.pigeons.find(item => item.ringNo === pigeon.motherRing) || null;
-  const children = db.pigeons.filter(item => item.fatherRing === ringNo || item.motherRing === ringNo);
-  const breedingPlans = getPigeonBreedingPlans(db, ringNo);
-  const raceResults = getPigeonRaceResults(db, ringNo);
-  return { pigeon, father, mother, children, breedingPlans, raceResults };
-}
-
-function buildPedigreeNode(db, ringNo, level, maxUpLevel, visited, path) {
-  const node = {
-    ringNo: ringNo || "",
-    exists: false,
-    pigeon: null,
-    isCircular: false,
-    circularVia: null,
-    level,
-    father: null,
-    mother: null,
-    children: []
-  };
-
-  if (!ringNo) {
-    return node;
-  }
-
-  if (visited.has(ringNo)) {
-    node.isCircular = true;
-    node.circularVia = path.get(ringNo) || "已访问";
-    return node;
-  }
-
-  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
-  if (!pigeon) {
-    return node;
-  }
-
-  node.exists = true;
-  node.pigeon = {
-    ringNo: pigeon.ringNo,
-    owner: pigeon.owner,
-    color: pigeon.color,
-    loft: pigeon.loft
-  };
-
-  visited.set(ringNo, true);
-  path.set(ringNo, [...(path.get("__currentPath__") || []), ringNo].join(" → "));
-  const currentPath = path.get("__currentPath__") || [];
-  currentPath.push(ringNo);
-  path.set("__currentPath__", currentPath);
-
-  if (level < maxUpLevel) {
-    const fatherVisited = new Map(visited);
-    const fatherPath = new Map(path);
-    fatherPath.set("__currentPath__", [...currentPath]);
-    node.father = buildPedigreeNode(db, pigeon.fatherRing, level + 1, maxUpLevel, fatherVisited, fatherPath);
-
-    const motherVisited = new Map(visited);
-    const motherPath = new Map(path);
-    motherPath.set("__currentPath__", [...currentPath]);
-    node.mother = buildPedigreeNode(db, pigeon.motherRing, level + 1, maxUpLevel, motherVisited, motherPath);
-  }
-
-  currentPath.pop();
-  path.set("__currentPath__", currentPath);
-
-  return node;
-}
-
-function buildPedigree(db, ringNo) {
-  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
-  if (!pigeon) return null;
-
-  const visited = new Map();
-  const path = new Map();
-  path.set("__currentPath__", []);
-
-  const root = buildPedigreeNode(db, ringNo, 0, 2, visited, path);
-
-  const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
-  root.children = children.map(child => {
-    const childVisited = new Map();
-    childVisited.set(ringNo, true);
-    const childPath = new Map();
-    childPath.set("__currentPath__", [ringNo]);
-    return buildPedigreeNode(db, child.ringNo, -1, 0, childVisited, childPath);
-  });
-
-  return root;
-}
-function parseCsv(text) {
-  const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
-  if (lines.length === 0) return [];
-  const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
-  const fieldMap = {
-    "足环号": "ringNo", "环号": "ringNo", "ringno": "ringNo", "ring_no": "ringNo", "ring-no": "ringNo",
-    "鸽主": "owner", "owner": "owner",
-    "父环号": "fatherRing", "父鸽环号": "fatherRing", "父亲环号": "fatherRing", "fatherring": "fatherRing", "father_ring": "fatherRing", "father-ring": "fatherRing",
-    "母环号": "motherRing", "母鸽环号": "motherRing", "母亲环号": "motherRing", "motherring": "motherRing", "mother_ring": "motherRing", "mother-ring": "motherRing",
-    "羽色": "color", "color": "color",
-    "棚号": "loft", "出生棚": "loft", "出生棚号": "loft", "loft": "loft"
-  };
-  const cols = headers.map(h => fieldMap[h] || null);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cells = lines[i].split(",").map(c => c.trim());
-    const row = {};
-    cols.forEach((col, idx) => {
-      if (col && cells[idx] !== undefined) row[col] = cells[idx];
-    });
-    rows.push({ _line: i + 1, _raw: lines[i], ...row });
-  }
-  return rows;
-}
-function validateImport(db, rows) {
-  const existingRingNos = new Set(db.pigeons.map(p => p.ringNo));
-  const seenInBatch = new Map();
-  const result = [];
-  const required = ["ringNo", "owner", "color", "loft"];
-  rows.forEach(row => {
-    const errors = [];
-    required.forEach(f => {
-      if (!row[f] || row[f].trim() === "") errors.push(`缺少${{ringNo:"足环号",owner:"鸽主",color:"羽色",loft:"棚号"}[f]}`);
-    });
-    if (row.ringNo) {
-      if (existingRingNos.has(row.ringNo)) errors.push("足环号已存在");
-      if (seenInBatch.has(row.ringNo)) errors.push("批次内重复");
-      else seenInBatch.set(row.ringNo, row._line);
-    }
-    result.push({ ...row, _valid: errors.length === 0, _errors: errors });
-  });
-  return result;
-}
-
-function getAllAncestors(db, ringNo, visited = new Set()) {
-  if (visited.has(ringNo)) return [];
-  visited.add(ringNo);
-  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
-  if (!pigeon) return [];
-  const ancestors = [];
-  if (pigeon.fatherRing) {
-    ancestors.push(pigeon.fatherRing);
-    ancestors.push(...getAllAncestors(db, pigeon.fatherRing, visited));
-  }
-  if (pigeon.motherRing) {
-    ancestors.push(pigeon.motherRing);
-    ancestors.push(...getAllAncestors(db, pigeon.motherRing, visited));
-  }
-  return ancestors;
-}
-
-function getAllDescendants(db, ringNo, visited = new Set()) {
-  if (visited.has(ringNo)) return [];
-  visited.add(ringNo);
-  const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
-  const descendants = children.map(c => c.ringNo);
-  children.forEach(c => {
-    descendants.push(...getAllDescendants(db, c.ringNo, visited));
-  });
-  return descendants;
-}
-
-function validateBreedingPlan(db, fatherRing, motherRing) {
-  const errors = [];
-  if (!fatherRing || !fatherRing.trim()) errors.push("父鸽足环号不能为空");
-  if (!motherRing || !motherRing.trim()) errors.push("母鸽足环号不能为空");
-  if (fatherRing && motherRing && fatherRing === motherRing) errors.push("父鸽和母鸽不能是同一只");
-  const fatherExists = db.pigeons.some(p => p.ringNo === fatherRing);
-  const motherExists = db.pigeons.some(p => p.ringNo === motherRing);
-  if (fatherRing && !fatherExists) errors.push("父鸽足环号不存在");
-  if (motherRing && !motherExists) errors.push("母鸽足环号不存在");
-  if (fatherExists && motherExists) {
-    const fatherDescendants = new Set(getAllDescendants(db, fatherRing));
-    if (fatherDescendants.has(motherRing)) errors.push("母鸽是父鸽的子代，不能反向作为父母");
-    const motherDescendants = new Set(getAllDescendants(db, motherRing));
-    if (motherDescendants.has(fatherRing)) errors.push("父鸽是母鸽的子代，不能反向作为父母");
-  }
-  return errors;
-}
-
-function getPigeonBreedingPlans(db, ringNo) {
-  return db.breedingPlans.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
-}
-
-function getPigeonRaceResults(db, ringNo) {
-  const results = [];
-  if (db.raceEvents) {
-    db.raceEvents.forEach(event => {
-      event.results.forEach(r => {
-        if (r.ringNo === ringNo) {
-          results.push({ eventId: event.id, eventName: event.name, date: event.date, distance: event.distance, returnTime: r.returnTime, rank: r.rank });
-        }
-      });
-    });
-  }
-  return results.sort((a, b) => b.date.localeCompare(a.date));
-}
-
-const page = `<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -355,37 +115,55 @@ const page = `<!doctype html>
     .edit-inline input { flex:1; }
     .rank-badge { display:inline-block; min-width:36px; text-align:center; background:var(--accent); color:#fff; border-radius:4px; padding:2px 6px; font-size:12px; font-weight:700; }
     .rank-badge.top { background:var(--yellow); }
-    .pedigree-container { padding:10px 0; }
-    .pedigree-toolbar { display:flex; gap:10px; margin-bottom:16px; align-items:center; }
-    .pedigree-toolbar input { flex:1; }
-    .pedigree-tree { display:flex; flex-direction:column; gap:0; }
-    .pedigree-row { display:grid; gap:12px; margin-bottom:4px; }
-    .pedigree-row.level-2 { grid-template-columns:repeat(4, 1fr); }
-    .pedigree-row.level-1 { grid-template-columns:repeat(2, 1fr); }
-    .pedigree-row.level-0 { grid-template-columns:1fr; }
-    .pedigree-node { background:#fff; border:2px solid var(--line); border-radius:10px; padding:10px 12px; position:relative; transition:border-color 0.2s; }
-    .pedigree-node.exists { cursor:pointer; }
-    .pedigree-node.exists:hover { border-color:var(--accent); background:#f0f5fa; }
-    .pedigree-node.circular { border-color:var(--yellow); background:#fff8e6; cursor:default; }
-    .pedigree-node.missing { background:#f8fafb; border-style:dashed; color:var(--muted); }
-    .pedigree-node .role { font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
-    .pedigree-node .ring { font-weight:700; font-size:15px; margin-top:2px; word-break:break-all; }
-    .pedigree-node .info { font-size:12px; color:var(--muted); margin-top:3px; }
-    .pedigree-node .circular-tag { display:inline-block; background:var(--yellow); color:#5a4710; font-size:10px; padding:1px 6px; border-radius:4px; margin-top:4px; font-weight:700; }
-    .pedigree-children { margin-top:20px; }
-    .pedigree-children-title { font-size:14px; font-weight:700; color:var(--accent); margin-bottom:10px; padding-bottom:4px; border-bottom:2px solid var(--accent); }
-    .pedigree-children-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:10px; }
-    .pedigree-legend { display:flex; gap:16px; margin-top:16px; padding-top:12px; border-top:1px dashed var(--line); font-size:12px; color:var(--muted); flex-wrap:wrap; }
+    .pedigree-container { padding: 10px 0; }
+    .pedigree-legend { display:flex; gap:16px; margin-bottom:14px; padding:10px 14px; background:#f8fafb; border:1px solid var(--line); border-radius:8px; font-size:12px; flex-wrap:wrap; }
     .pedigree-legend-item { display:flex; align-items:center; gap:6px; }
-    .legend-box { width:18px; height:18px; border-radius:4px; border:2px solid var(--line); }
-    .legend-box.exists { background:#fff; border-color:var(--accent); }
-    .legend-box.missing { background:#f8fafb; border-style:dashed; }
-    .legend-box.circular { background:#fff8e6; border-color:var(--yellow); }
-    .pedigree-breadcrumb { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:12px; font-size:13px; }
-    .pedigree-breadcrumb .crumb { background:#eef3f7; border:1px solid var(--line); padding:3px 10px; border-radius:999px; color:var(--accent); cursor:pointer; }
-    .pedigree-breadcrumb .crumb.current { background:var(--accent); color:#fff; cursor:default; }
-    .pedigree-breadcrumb .sep { color:var(--muted); }
-    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} }
+    .legend-dot { width:12px; height:12px; border-radius:3px; border:1px solid var(--line); }
+    .legend-dot.self { background:var(--accent); border-color:var(--accent); }
+    .legend-dot.father { background:#d6e4f0; border-color:#89a9c6; }
+    .legend-dot.mother { background:#f5d6dc; border-color:#c68996; }
+    .legend-dot.child { background:#d9ead3; border-color:#82b366; }
+    .legend-dot.missing { background:#f5f5f5; border-style:dashed; }
+    .legend-dot.circular { background:#fff2cc; border-color:#d6b656; }
+    .pedigree-node { display:inline-block; min-width:160px; padding:10px 12px; border:2px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; transition:all 0.15s; position:relative; }
+    .pedigree-node:hover { border-color:var(--accent); box-shadow:0 2px 8px rgba(49,95,131,0.15); transform:translateY(-1px); }
+    .pedigree-node.self { border-color:var(--accent); background:#f0f5fa; }
+    .pedigree-node.father { border-color:#89a9c6; background:#eef4f9; }
+    .pedigree-node.mother { border-color:#c68996; background:#f7edf0; }
+    .pedigree-node.child { border-color:#82b366; background:#f0f7ed; }
+    .pedigree-node.missing { border-style:dashed; background:#fafafa; cursor:default; color:var(--muted); }
+    .pedigree-node.circular { border-color:#d6b656; background:#fffbe6; cursor:default; }
+    .pedigree-node .p-ring { font-weight:700; font-size:14px; }
+    .pedigree-node.missing .p-ring { font-weight:500; }
+    .pedigree-node .p-meta { font-size:11px; color:var(--muted); margin-top:3px; }
+    .pedigree-node .p-badge { position:absolute; top:-8px; right:-6px; font-size:10px; padding:1px 6px; border-radius:10px; background:var(--accent); color:#fff; font-weight:700; }
+    .pedigree-node.father .p-badge { background:#5b8cb0; }
+    .pedigree-node.mother .p-badge { background:#a86b7a; }
+    .pedigree-node.child .p-badge { background:#6aa84f; }
+    .pedigree-node.circular .p-badge { background:#c9a227; }
+    .generation-row { display:flex; justify-content:center; gap:20px; padding:12px 0; }
+    .generation-label { text-align:center; font-size:12px; color:var(--muted); margin-bottom:4px; font-weight:700; }
+    .connector-v { width:2px; height:20px; background:var(--line); margin:0 auto; }
+    .connector-h-wrap { display:flex; justify-content:center; align-items:center; gap:40px; }
+    .connector-h { width:40px; height:2px; background:var(--line); }
+    .connector-half-l { width:50%; height:2px; background:var(--line); position:absolute; top:0; left:50%; }
+    .connector-half-r { width:50%; height:2px; background:var(--line); position:absolute; top:0; right:50%; }
+    .parents-row { display:flex; justify-content:center; gap:80px; position:relative; }
+    .grandparents-row { display:grid; grid-template-columns:1fr 1fr; gap:20px 160px; justify-items:center; position:relative; }
+    .grandparent-col { display:flex; flex-direction:column; align-items:center; }
+    .grandparent-inner { display:flex; gap:40px; }
+    .center-connector { position:relative; padding-top:20px; }
+    .tree-center { display:flex; flex-direction:column; align-items:center; }
+    .children-section { margin-top:30px; padding-top:20px; border-top:2px dashed var(--line); }
+    .children-title { text-align:center; font-size:13px; color:var(--muted); margin-bottom:12px; font-weight:700; }
+    .children-row { display:flex; justify-content:center; gap:16px; flex-wrap:wrap; }
+    .pedigree-toolbar { display:grid; grid-template-columns:1fr auto; gap:10px; margin-bottom:14px; }
+    .pedigree-breadcrumb { display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding:10px 14px; background:#f8fafb; border:1px solid var(--line); border-radius:8px; margin-bottom:14px; }
+    .crumb { font-size:12px; padding:3px 8px; border-radius:4px; background:#fff; border:1px solid var(--line); cursor:pointer; }
+    .crumb:hover { border-color:var(--accent); color:var(--accent); }
+    .crumb.current { background:var(--accent); color:#fff; border-color:var(--accent); cursor:default; }
+    .crumb-sep { color:var(--muted); font-size:12px; }
+    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .grandparents-row{grid-template-columns:1fr;gap:16px;} .parents-row{gap:20px;} .grandparent-inner{gap:16px;} }
   </style>
 </head>
 <body>
@@ -611,23 +389,16 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     <div class="modal-backdrop">
       <div class="modal" style="max-width:1200px;">
         <div class="modal-header">
-          <h2>三代血统树查询</h2>
+          <h2>三代血统树查看</h2>
           <button id="closePedigree" class="secondary">关闭</button>
         </div>
-        <div class="pedigree-container">
-          <div class="pedigree-toolbar">
-            <input id="pedigreeSearch" placeholder="输入足环号查询血统树（示例：CHN-2026-001）">
-            <button id="pedigreeSearchBtn">查询</button>
-          </div>
-          <div id="pedigreeBreadcrumb" class="pedigree-breadcrumb"></div>
-          <div id="pedigreeContent">
-            <div class="empty-state">请输入足环号开始查询三代血统树</div>
-          </div>
-          <div id="pedigreeLegend" class="pedigree-legend" style="display:none;">
-            <div class="pedigree-legend-item"><div class="legend-box exists"></div><span>已登记（点击查看该鸽血统树）</span></div>
-            <div class="pedigree-legend-item"><div class="legend-box missing"></div><span>未登记</span></div>
-            <div class="pedigree-legend-item"><div class="legend-box circular"></div><span>循环血统（已停止展开）</span></div>
-          </div>
+        <div class="pedigree-toolbar">
+          <input id="pedigreeSearch" placeholder="输入足环号查看血统树">
+          <button id="pedigreeSearchBtn">查询血统树</button>
+        </div>
+        <div id="pedigreeBreadcrumb"></div>
+        <div id="pedigreeContent">
+          <div class="empty-state" style="margin-top:20px;">请输入足环号开始查询三代血统树</div>
         </div>
       </div>
     </div>
@@ -1132,7 +903,9 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     document.querySelector("#parseImportBtn").onclick = () => {
       const input = document.querySelector("#raceResultInput").value.trim();
       if (!input) { alert("请粘贴成绩数据"); return; }
-      const lines = input.split(/\\n/).filter(l => l.trim());
+      const LF = String.fromCharCode(10);
+      const CR = String.fromCharCode(13);
+      const lines = input.split(LF).map(s => s.endsWith(CR) ? s.slice(0, -1) : s).filter(l => l.trim());
       const parsed = [];
       for (const line of lines) {
         const parts = line.split(",").map(s => s.trim());
@@ -1274,411 +1047,134 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       }
     };
     const pedigreeModal = document.querySelector("#pedigreeModal");
-    const pedigreeContent = document.querySelector("#pedigreeContent");
     const pedigreeSearch = document.querySelector("#pedigreeSearch");
-    const pedigreeLegend = document.querySelector("#pedigreeLegend");
+    const pedigreeSearchBtn = document.querySelector("#pedigreeSearchBtn");
+    const pedigreeContent = document.querySelector("#pedigreeContent");
     const pedigreeBreadcrumb = document.querySelector("#pedigreeBreadcrumb");
     let pedigreeHistory = [];
-    function renderPedigreeNode(node, roleLabel) {
-      let classes = "pedigree-node";
-      let ringDisplay = "未登记";
-      let infoDisplay = "";
-      let circularTag = "";
-      if (node.isCircular) {
-        classes += " circular";
-        ringDisplay = node.ringNo || "未登记";
-        circularTag = '<div class="circular-tag">↻ 循环血统：' + (node.circularVia || "已访问") + '</div>';
-      } else if (node.exists) {
-        classes += " exists";
-        ringDisplay = node.ringNo;
-        infoDisplay = (node.pigeon?.owner || "") + (node.pigeon?.color ? " · " + node.pigeon.color : "") + (node.pigeon?.loft ? " · " + node.pigeon.loft : "");
-      } else if (node.ringNo) {
-        classes += " missing";
-        ringDisplay = node.ringNo;
-        infoDisplay = "未登记";
-      } else {
-        classes += " missing";
-      }
-      const dataAttr = (node.exists && !node.isCircular) ? ' data-pedigree-jump="' + node.ringNo + '"' : '';
-      return '<div class="' + classes + '"' + dataAttr + '>' +
-        '<div class="role">' + roleLabel + '</div>' +
-        '<div class="ring">' + ringDisplay + '</div>' +
-        (infoDisplay ? '<div class="info">' + infoDisplay + '</div>' : '') +
-        circularTag +
-      '</div>';
-    }
-    function renderPedigreeTree(root) {
-      if (!root) {
-        pedigreeContent.innerHTML = '<div class="empty-state">未找到该足环号的档案</div>';
-        return;
-      }
-      const level2 = [];
-      const gf = root.father?.father;
-      const gm = root.father?.mother;
-      const mf = root.mother?.father;
-      const mm = root.mother?.mother;
-      level2.push(gf ? renderPedigreeNode(gf, "祖父") : renderPedigreeNode({ ringNo: "", exists: false }, "祖父"));
-      level2.push(gm ? renderPedigreeNode(gm, "祖母") : renderPedigreeNode({ ringNo: "", exists: false }, "祖母"));
-      level2.push(mf ? renderPedigreeNode(mf, "外祖父") : renderPedigreeNode({ ringNo: "", exists: false }, "外祖父"));
-      level2.push(mm ? renderPedigreeNode(mm, "外祖母") : renderPedigreeNode({ ringNo: "", exists: false }, "外祖母"));
-      const level1 = [];
-      level1.push(root.father ? renderPedigreeNode(root.father, "父亲") : renderPedigreeNode({ ringNo: root.pigeon?.fatherRing || "", exists: false }, "父亲"));
-      level1.push(root.mother ? renderPedigreeNode(root.mother, "母亲") : renderPedigreeNode({ ringNo: root.pigeon?.motherRing || "", exists: false }, "母亲"));
-      const level0 = [renderPedigreeNode(root, "本鸽")];
-      let childrenHtml = "";
-      if (root.children && root.children.length > 0) {
-        const childrenNodes = root.children.map(child => {
-          const isFather = child.pigeon?.fatherRing === root.ringNo;
-          return renderPedigreeNode(child, isFather ? "子代（父方）" : "子代（母方）");
-        }).join("");
-        childrenHtml = '<div class="pedigree-children">' +
-          '<div class="pedigree-children-title">子代（共 ' + root.children.length + ' 只）</div>' +
-          '<div class="pedigree-children-grid">' + childrenNodes + '</div>' +
-        '</div>';
-      } else {
-        childrenHtml = '<div class="pedigree-children">' +
-          '<div class="pedigree-children-title">子代</div>' +
-          '<div class="empty-state" style="padding:14px;">暂无已登记子代</div>' +
-        '</div>';
-      }
-      pedigreeContent.innerHTML = '<div class="pedigree-tree">' +
-        '<div class="pedigree-row level-2">' + level2.join("") + '</div>' +
-        '<div class="pedigree-row level-1">' + level1.join("") + '</div>' +
-        '<div class="pedigree-row level-0">' + level0.join("") + '</div>' +
-      '</div>' + childrenHtml;
-      pedigreeLegend.style.display = "flex";
-      document.querySelectorAll("[data-pedigree-jump]").forEach(el => {
-        el.onclick = () => {
-          const ringNo = el.dataset.pedigreeJump;
-          loadPedigree(ringNo);
-        };
-      });
-    }
-    function renderPedigreeBreadcrumb() {
-      if (pedigreeHistory.length === 0) {
-        pedigreeBreadcrumb.innerHTML = "";
-        return;
-      }
-      const items = pedigreeHistory.map((ringNo, idx) => {
-        const isCurrent = idx === pedigreeHistory.length - 1;
-        const cls = "crumb" + (isCurrent ? " current" : "");
-        const clickable = !isCurrent ? ' data-crumb-idx="' + idx + '"' : '';
-        return '<span class="' + cls + '"' + clickable + '>' + ringNo + '</span>';
-      });
-      pedigreeBreadcrumb.innerHTML = items.join('<span class="sep">›</span>');
-      document.querySelectorAll("[data-crumb-idx]").forEach(el => {
-        el.onclick = () => {
-          const idx = parseInt(el.dataset.crumbIdx);
-          pedigreeHistory = pedigreeHistory.slice(0, idx + 1);
-          const ringNo = pedigreeHistory[idx];
-          pedigreeBreadcrumb.innerHTML = "";
-          loadPedigreeFromHistory(ringNo, true);
-        };
-      });
-    }
-    async function loadPedigreeFromHistory(ringNo, skipHistory) {
-      try {
-        pedigreeSearch.value = ringNo;
-        const data = await api('/api/pigeons/' + encodeURIComponent(ringNo) + '/pedigree');
-        renderPedigreeTree(data);
-        if (!skipHistory) {
-          if (pedigreeHistory[pedigreeHistory.length - 1] !== ringNo) {
-            pedigreeHistory.push(ringNo);
-          }
-        }
-        renderPedigreeBreadcrumb();
-      } catch(e) {
-        pedigreeContent.innerHTML = '<div class="empty-state" style="color:var(--red);">查询失败：' + e.message + '</div>';
-        pedigreeLegend.style.display = "none";
-      }
-    }
-    async function loadPedigree(ringNo) {
-      loadPedigreeFromHistory(ringNo, false);
-    }
+    let currentPedigreeRing = null;
     document.querySelector("#pedigreeBtn").onclick = () => {
       pedigreeModal.style.display = "block";
-      pedigreeHistory = [];
-      pedigreeContent.innerHTML = '<div class="empty-state">请输入足环号开始查询三代血统树</div>';
-      pedigreeLegend.style.display = "none";
-      pedigreeBreadcrumb.innerHTML = "";
-      pedigreeSearch.value = currentRingNo || "";
       if (currentRingNo) {
+        pedigreeSearch.value = currentRingNo;
         loadPedigree(currentRingNo);
       }
     };
-    document.querySelector("#closePedigree").onclick = () => {
-      pedigreeModal.style.display = "none";
-    };
-    document.querySelector("#pedigreeSearchBtn").onclick = () => {
+    document.querySelector("#closePedigree").onclick = () => { pedigreeModal.style.display = "none"; };
+    pedigreeSearchBtn.onclick = () => {
       const ringNo = pedigreeSearch.value.trim();
-      if (!ringNo) {
-        pedigreeContent.innerHTML = '<div class="empty-state">请输入足环号</div>';
-        pedigreeLegend.style.display = "none";
-        return;
-      }
+      if (!ringNo) return;
       pedigreeHistory = [];
       loadPedigree(ringNo);
     };
     pedigreeSearch.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") document.querySelector("#pedigreeSearchBtn").click();
+      if (e.key === "Enter") pedigreeSearchBtn.click();
     });
+    function getBadgeLabel(generation, role) {
+      if (generation === 0) return "本鸽";
+      if (generation === -1) return "子代";
+      if (generation === 1) {
+        return role === "father" ? "父" : "母";
+      }
+      if (generation === 2) {
+        return role || "祖辈";
+      }
+      return "";
+    }
+    function renderPedigreeNode(node, role, typeClass) {
+      if (!node) return "";
+      const isMissing = !node.exists && !node.circular;
+      const isCircular = node.circular;
+      let classes = "pedigree-node " + (typeClass || "");
+      if (isMissing) classes += " missing";
+      if (isCircular) classes += " circular";
+      const badge = getBadgeLabel(node.generation, role);
+      const displayRing = isMissing ? "未登记" : (isCircular ? (node.ringNo + " (循环)") : node.ringNo);
+      let meta = "";
+      if (!isMissing && !isCircular && node.pigeon) {
+        const parts = [];
+        if (node.pigeon.owner) parts.push(node.pigeon.owner);
+        if (node.pigeon.color) parts.push(node.pigeon.color);
+        if (parts.length) meta = '<div class="p-meta">' + parts.join(" · ") + '</div>';
+      }
+      if (isCircular) {
+        meta = '<div class="p-meta">已在上层出现</div>';
+      }
+      const clickable = !isMissing && !isCircular;
+      const clickAttr = clickable ? 'data-pedigree-jump="' + node.ringNo + '"' : '';
+      const badgeHtml = badge ? '<span class="p-badge">' + badge + '</span>' : '';
+      return '<div class="' + classes + '" ' + clickAttr + ' style="text-align:center;">' + badgeHtml + '<div class="p-ring">' + displayRing + '</div>' + meta + '</div>';
+    }
+    function renderGrandparentPair(fatherNode, motherNode, sideLabel) {
+      const fatherRole = sideLabel === "paternal" ? "祖父" : "外祖父";
+      const motherRole = sideLabel === "paternal" ? "祖母" : "外祖母";
+      return '<div class="grandparent-col"><div class="generation-label">' + (sideLabel === "paternal" ? "父方祖辈" : "母方祖辈") + '</div><div class="grandparent-inner">' + renderPedigreeNode(fatherNode, fatherRole, "father") + renderPedigreeNode(motherNode, motherRole, "mother") + '</div></div>';
+    }
+    function renderPedigreeTree(tree) {
+      const self = tree.self;
+      const father = self.father || { ringNo: "", exists: false, circular: false, generation: 1, pigeon: null, father: null, mother: null };
+      const mother = self.mother || { ringNo: "", exists: false, circular: false, generation: 1, pigeon: null, father: null, mother: null };
+      const paternalGF = father.father || { ringNo: "", exists: false, circular: false, generation: 2, pigeon: null, father: null, mother: null };
+      const paternalGM = father.mother || { ringNo: "", exists: false, circular: false, generation: 2, pigeon: null, father: null, mother: null };
+      const maternalGF = mother.father || { ringNo: "", exists: false, circular: false, generation: 2, pigeon: null, father: null, mother: null };
+      const maternalGM = mother.mother || { ringNo: "", exists: false, circular: false, generation: 2, pigeon: null, father: null, mother: null };
+      let html = '<div class="pedigree-container">';
+      html += '<div class="pedigree-legend"><div class="pedigree-legend-item"><div class="legend-dot self"></div><span>本鸽</span></div><div class="pedigree-legend-item"><div class="legend-dot father"></div><span>父系</span></div><div class="pedigree-legend-item"><div class="legend-dot mother"></div><span>母系</span></div><div class="pedigree-legend-item"><div class="legend-dot child"></div><span>子代</span></div><div class="pedigree-legend-item"><div class="legend-dot missing"></div><span>未登记</span></div><div class="pedigree-legend-item"><div class="legend-dot circular"></div><span>循环引用</span></div></div>';
+      html += '<div class="tree-center">';
+      html += '<div class="grandparents-row">' + renderGrandparentPair(paternalGF, paternalGM, "paternal") + renderGrandparentPair(maternalGF, maternalGM, "maternal") + '</div>';
+      html += '<div class="connector-v" style="height:24px;"></div>';
+      html += '<div class="parents-row">' + renderPedigreeNode(father, "父", "father") + renderPedigreeNode(mother, "母", "mother") + '</div>';
+      html += '<div class="connector-v" style="height:24px;"></div>';
+      html += '<div class="generation-row">' + renderPedigreeNode(self, "本鸽", "self") + '</div>';
+      html += '</div>';
+      if (tree.children && tree.children.length > 0) {
+        html += '<div class="children-section"><div class="children-title">子代（共 ' + tree.children.length + ' 只）</div><div class="children-row">' + tree.children.map(child => renderPedigreeNode(child, "子代", "child")).join("") + '</div></div>';
+      } else {
+        html += '<div class="children-section"><div class="children-title">子代</div><div style="text-align:center;"><div class="pedigree-node missing" style="text-align:center;"><span class="p-badge">子代</span><div class="p-ring">未登记</div></div></div></div>';
+      }
+      html += '</div>';
+      return html;
+    }
+    function renderPedigreeBreadcrumb() {
+      if (pedigreeHistory.length === 0) { pedigreeBreadcrumb.innerHTML = ""; return; }
+      let html = '<div class="pedigree-breadcrumb"><span style="font-size:12px;color:var(--muted);font-weight:700;">查询路径：</span>';
+      pedigreeHistory.forEach((ring, idx) => {
+        const isCurrent = idx === pedigreeHistory.length - 1;
+        if (idx > 0) html += '<span class="crumb-sep">›</span>';
+        html += '<span class="crumb ' + (isCurrent ? "current" : "") + '" ' + (isCurrent ? '' : 'data-crumb-jump="' + idx + '"') + '>' + ring + '</span>';
+      });
+      html += '</div>';
+      pedigreeBreadcrumb.innerHTML = html;
+      pedigreeBreadcrumb.querySelectorAll("[data-crumb-jump]").forEach(el => {
+        el.onclick = () => {
+          const idx = parseInt(el.dataset.crumbJump);
+          pedigreeHistory = pedigreeHistory.slice(0, idx + 1);
+          currentPedigreeRing = pedigreeHistory[idx];
+          loadPedigreeData(currentPedigreeRing);
+        };
+      });
+    }
+    async function loadPedigree(ringNo) {
+      currentPedigreeRing = ringNo;
+      if (pedigreeHistory[pedigreeHistory.length - 1] !== ringNo) {
+        pedigreeHistory.push(ringNo);
+      }
+      await loadPedigreeData(ringNo);
+    }
+    async function loadPedigreeData(ringNo) {
+      try {
+        const tree = await api('/api/pigeons/' + encodeURIComponent(ringNo) + '/pedigree');
+        pedigreeContent.innerHTML = renderPedigreeTree(tree);
+        renderPedigreeBreadcrumb();
+        pedigreeContent.querySelectorAll("[data-pedigree-jump]").forEach(el => {
+          el.onclick = () => loadPedigree(el.dataset.pedigreeJump);
+        });
+      } catch(e) {
+        pedigreeContent.innerHTML = '<div class="empty-state" style="margin-top:20px;">未找到足环号 <b>' + ringNo + '</b> 的档案，请先在系统中登记。</div>';
+        pedigreeBreadcrumb.innerHTML = "";
+      }
+    }
     load();
   </script>
 </body>
-</html>`;
-
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const db = await loadDb();
-    if (req.method === "GET" && url.pathname === "/") {
-      res.writeHead(200, { "Content-Type":"text/html; charset=utf-8" });
-      return res.end(page);
-    }
-    if (req.method === "GET" && url.pathname === "/api/pigeons") return sendJson(res, 200, db.pigeons);
-    if (req.method === "POST" && url.pathname === "/api/pigeons") {
-      const input = await body(req);
-      if (db.pigeons.some(item => item.ringNo === input.ringNo)) return sendJson(res, 409, { error: "ring_exists" });
-      const pigeon = { ...input, vaccines: [], transfers: [], races: [] };
-      db.pigeons.unshift(pigeon);
-      await saveDb(db);
-      return sendJson(res, 201, pigeon);
-    }
-    const relationMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/relation$/);
-    if (relationMatch && req.method === "GET") {
-      const data = relation(db, decodeURIComponent(relationMatch[1]));
-      return data ? sendJson(res, 200, data) : sendJson(res, 404, { error: "pigeon_not_found" });
-    }
-    const pedigreeMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/pedigree$/);
-    if (pedigreeMatch && req.method === "GET") {
-      const data = buildPedigree(db, decodeURIComponent(pedigreeMatch[1]));
-      return data ? sendJson(res, 200, data) : sendJson(res, 404, { error: "pigeon_not_found" });
-    }
-    const actionMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/(transfers|races|vaccines)$/);
-    if (actionMatch && req.method === "POST") {
-      const pigeon = db.pigeons.find(item => item.ringNo === decodeURIComponent(actionMatch[1]));
-      if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
-      const input = await body(req);
-      if (actionMatch[2] === "transfers") {
-        const transfer = { date: input.date || new Date().toISOString().slice(0, 10), from: pigeon.owner, to: input.to };
-        pigeon.owner = input.to;
-        pigeon.transfers.push(transfer);
-      }
-      if (actionMatch[2] === "races") pigeon.races.push({ date: input.date || new Date().toISOString().slice(0, 10), event: input.event, distance: Number(input.distance || 0), returnTime: input.returnTime || "", rank: Number(input.rank || 0) });
-      if (actionMatch[2] === "vaccines") pigeon.vaccines.push({ date: input.date || new Date().toISOString().slice(0, 10), name: input.name, remark: input.remark || "" });
-      await saveDb(db);
-      return sendJson(res, 200, pigeon);
-    }
-    if (req.method === "POST" && url.pathname === "/api/pigeons/import/preview") {
-      const input = await body(req);
-      const csvText = (input.csv || "").toString();
-      const rows = parseCsv(csvText);
-      const validated = validateImport(db, rows);
-      const total = validated.length;
-      const valid = validated.filter(r => r._valid).length;
-      const invalid = total - valid;
-      const duplicates = validated.filter(r => r._errors.some(e => e.includes("重复") || e.includes("已存在"))).length;
-      return sendJson(res, 200, { total, valid, invalid, duplicates, rows: validated });
-    }
-    if (req.method === "POST" && url.pathname === "/api/pigeons/import/commit") {
-      const input = await body(req);
-      const csvText = (input.csv || "").toString();
-      const rows = parseCsv(csvText);
-      const validated = validateImport(db, rows);
-      const successRows = [];
-      const failedRows = [];
-      validated.forEach(row => {
-        if (row._valid) {
-          const pigeon = {
-            ringNo: row.ringNo,
-            owner: row.owner,
-            fatherRing: row.fatherRing || "",
-            motherRing: row.motherRing || "",
-            color: row.color,
-            loft: row.loft,
-            vaccines: [],
-            transfers: [],
-            races: []
-          };
-          db.pigeons.unshift(pigeon);
-          successRows.push({ line: row._line, ringNo: row.ringNo });
-        } else {
-          failedRows.push({ line: row._line, ringNo: row.ringNo || "(无)", errors: row._errors });
-        }
-      });
-      if (successRows.length > 0) await saveDb(db);
-      return sendJson(res, 200, { success: successRows.length, failed: failedRows.length, successRows, failedRows });
-    }
-    if (req.method === "GET" && url.pathname === "/api/breeding-plans") {
-      return sendJson(res, 200, db.breedingPlans);
-    }
-    if (req.method === "POST" && url.pathname === "/api/breeding-plans") {
-      const input = await body(req);
-      const fatherRing = (input.fatherRing || "").trim();
-      const motherRing = (input.motherRing || "").trim();
-      const errors = validateBreedingPlan(db, fatherRing, motherRing);
-      if (errors.length > 0) {
-        return sendJson(res, 400, { error: errors.join("、"), errors });
-      }
-      const plan = {
-        id: Date.now().toString(),
-        fatherRing,
-        motherRing,
-        planDate: input.planDate || new Date().toISOString().slice(0, 10),
-        remark: input.remark || "",
-        createdAt: new Date().toISOString().slice(0, 10)
-      };
-      db.breedingPlans.unshift(plan);
-      await saveDb(db);
-      return sendJson(res, 201, plan);
-    }
-    const breedingPlanMatch = url.pathname.match(/^\/api\/breeding-plans\/(.+)$/);
-    if (breedingPlanMatch && req.method === "DELETE") {
-      const planId = decodeURIComponent(breedingPlanMatch[1]);
-      const index = db.breedingPlans.findIndex(p => p.id === planId);
-      if (index === -1) return sendJson(res, 404, { error: "plan_not_found" });
-      db.breedingPlans.splice(index, 1);
-      await saveDb(db);
-      return sendJson(res, 200, { success: true });
-    }
-    const pigeonPlansMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/breeding-plans$/);
-    if (pigeonPlansMatch && req.method === "GET") {
-      const ringNo = decodeURIComponent(pigeonPlansMatch[1]);
-      const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
-      if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
-      const plans = getPigeonBreedingPlans(db, ringNo);
-      return sendJson(res, 200, plans);
-    }
-    if (req.method === "GET" && url.pathname === "/api/race-events") {
-      return sendJson(res, 200, db.raceEvents);
-    }
-    if (req.method === "POST" && url.pathname === "/api/race-events") {
-      const input = await body(req);
-      const name = (input.name || "").trim();
-      const distance = Number(input.distance || 0);
-      if (!name) return sendJson(res, 400, { error: "赛事名称不能为空" });
-      const event = {
-        id: Date.now().toString(),
-        name,
-        date: input.date || new Date().toISOString().slice(0, 10),
-        distance,
-        results: []
-      };
-      db.raceEvents.unshift(event);
-      await saveDb(db);
-      return sendJson(res, 201, event);
-    }
-    const raceEventResultsMatch = url.pathname.match(/^\/api\/race-events\/(.+)\/results$/);
-    if (raceEventResultsMatch && req.method === "POST") {
-      const eventId = decodeURIComponent(raceEventResultsMatch[1]);
-      const event = db.raceEvents.find(e => e.id === eventId);
-      if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
-      const input = await body(req);
-      const incoming = input.results || [];
-      const overwrite = input.overwrite || false;
-      const validRingNos = new Set(db.pigeons.map(p => p.ringNo));
-      const duplicates = [];
-      const validated = [];
-      incoming.forEach(r => {
-        const ringNo = (r.ringNo || "").trim();
-        if (!ringNo) return;
-        const existing = event.results.find(er => er.ringNo === ringNo);
-        if (existing) {
-          duplicates.push({ ringNo, existing: { returnTime: existing.returnTime, rank: existing.rank } });
-        }
-        const ringValid = validRingNos.has(ringNo);
-        validated.push({ ringNo, returnTime: r.returnTime || "", rank: Number(r.rank || 0), ringValid, existing: !!existing });
-      });
-      if (duplicates.length > 0 && !overwrite) {
-        return sendJson(res, 409, { duplicate: true, duplicates, validated });
-      }
-      let added = 0;
-      let updated = 0;
-      let invalidRings = [];
-      validated.forEach(r => {
-        if (!r.ringValid) { invalidRings.push(r.ringNo); return; }
-        if (r.existing) {
-          const idx = event.results.findIndex(er => er.ringNo === r.ringNo);
-          event.results[idx] = { ringNo: r.ringNo, returnTime: r.returnTime, rank: r.rank };
-          updated++;
-        } else {
-          event.results.push({ ringNo: r.ringNo, returnTime: r.returnTime, rank: r.rank });
-          added++;
-        }
-      });
-      await saveDb(db);
-      return sendJson(res, 200, { success: true, added, updated, invalidRings, event });
-    }
-    const singleResultMatch = url.pathname.match(/^\/api\/race-events\/([^/]+)\/results\/(.+)$/);
-    if (singleResultMatch && req.method === "PUT") {
-      const eventId = decodeURIComponent(singleResultMatch[1]);
-      const ringNo = decodeURIComponent(singleResultMatch[2]);
-      const event = db.raceEvents.find(e => e.id === eventId);
-      if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
-      const resultIndex = event.results.findIndex(r => r.ringNo === ringNo);
-      if (resultIndex === -1) return sendJson(res, 404, { error: "result_not_found" });
-      const input = await body(req);
-      const validRingNos = new Set(db.pigeons.map(p => p.ringNo));
-      if (input.ringNo !== undefined && input.ringNo !== ringNo) {
-        const newRingNo = input.ringNo.trim();
-        if (!validRingNos.has(newRingNo)) return sendJson(res, 400, { error: "足环号不存在" });
-        if (event.results.some(r => r.ringNo === newRingNo)) return sendJson(res, 409, { error: "该足环号已有成绩" });
-        event.results[resultIndex].ringNo = newRingNo;
-      }
-      if (input.returnTime !== undefined) event.results[resultIndex].returnTime = input.returnTime || "";
-      if (input.rank !== undefined) event.results[resultIndex].rank = Number(input.rank || 0);
-      await saveDb(db);
-      return sendJson(res, 200, event.results[resultIndex]);
-    }
-    if (singleResultMatch && req.method === "DELETE") {
-      const eventId = decodeURIComponent(singleResultMatch[1]);
-      const ringNo = decodeURIComponent(singleResultMatch[2]);
-      const event = db.raceEvents.find(e => e.id === eventId);
-      if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
-      const resultIndex = event.results.findIndex(r => r.ringNo === ringNo);
-      if (resultIndex === -1) return sendJson(res, 404, { error: "result_not_found" });
-      event.results.splice(resultIndex, 1);
-      await saveDb(db);
-      return sendJson(res, 200, { success: true });
-    }
-    const raceEventMatch = url.pathname.match(/^\/api\/race-events\/([^/]+)$/);
-    if (raceEventMatch && req.method === "GET") {
-      const eventId = decodeURIComponent(raceEventMatch[1]);
-      const event = db.raceEvents.find(e => e.id === eventId);
-      if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
-      return sendJson(res, 200, event);
-    }
-    if (raceEventMatch && req.method === "PUT") {
-      const eventId = decodeURIComponent(raceEventMatch[1]);
-      const event = db.raceEvents.find(e => e.id === eventId);
-      if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
-      const input = await body(req);
-      if (input.name !== undefined) event.name = input.name.trim() || event.name;
-      if (input.date !== undefined) event.date = input.date || event.date;
-      if (input.distance !== undefined) event.distance = Number(input.distance || 0);
-      await saveDb(db);
-      return sendJson(res, 200, event);
-    }
-    if (raceEventMatch && req.method === "DELETE") {
-      const eventId = decodeURIComponent(raceEventMatch[1]);
-      const index = db.raceEvents.findIndex(e => e.id === eventId);
-      if (index === -1) return sendJson(res, 404, { error: "race_event_not_found" });
-      db.raceEvents.splice(index, 1);
-      await saveDb(db);
-      return sendJson(res, 200, { success: true });
-    }
-    const pigeonRaceResultsMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/race-results$/);
-    if (pigeonRaceResultsMatch && req.method === "GET") {
-      const ringNo = decodeURIComponent(pigeonRaceResultsMatch[1]);
-      const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
-      if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
-      const results = getPigeonRaceResults(db, ringNo);
-      return sendJson(res, 200, results);
-    }
-    sendJson(res, 404, { error: "not_found" });
-  } catch (error) {
-    sendJson(res, 500, { error: error.message });
-  }
-});
-
-server.listen(port, () => console.log(`Racing pigeon registry app listening on http://localhost:${port}`));
+</html>
