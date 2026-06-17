@@ -65,5 +65,15 @@
       "transfers": [],
       "races": []
     }
+  ],
+  "breedingPlans": [
+    {
+      "id": "1781686886277",
+      "fatherRing": "CHN-2022-188",
+      "motherRing": "CHN-2023-512",
+      "planDate": "2026-07-01",
+      "remark": "培育赛绩鸽后代",
+      "createdAt": "2026-06-17"
+    }
   ]
 }

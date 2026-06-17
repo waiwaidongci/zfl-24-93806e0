@@ -13,7 +13,8 @@ const seed = {
     { ringNo: "CHN-2026-001", owner: "北岸棚", fatherRing: "CHN-2022-188", motherRing: "CHN-2023-512", color: "灰", loft: "北岸A棚", vaccines: [{ date: "2026-04-01", name: "新城疫", remark: "首次免疫" }], transfers: [{ date: "2026-04-15", from: "育种棚", to: "北岸棚" }], races: [{ date: "2026-06-01", event: "120公里训放", distance: 120, returnTime: "10:42", rank: 18 }] },
     { ringNo: "CHN-2022-188", owner: "育种棚", fatherRing: "", motherRing: "", color: "雨点", loft: "种鸽棚", vaccines: [], transfers: [], races: [] },
     { ringNo: "CHN-2023-512", owner: "育种棚", fatherRing: "", motherRing: "", color: "红轮", loft: "种鸽棚", vaccines: [], transfers: [], races: [] }
-  ]
+  ],
+  breedingPlans: []
 };
 
 async function loadDb() {
@@ -21,7 +22,9 @@ async function loadDb() {
     await mkdir(dirname(dbPath), { recursive: true });
     await writeFile(dbPath, JSON.stringify(seed, null, 2));
   }
-  return JSON.parse(await readFile(dbPath, "utf8"));
+  const db = JSON.parse(await readFile(dbPath, "utf8"));
+  if (!db.breedingPlans) db.breedingPlans = [];
+  return db;
 }
 async function saveDb(db) { await writeFile(dbPath, JSON.stringify(db, null, 2)); }
 async function body(req) {
@@ -39,7 +42,8 @@ function relation(db, ringNo) {
   const father = db.pigeons.find(item => item.ringNo === pigeon.fatherRing) || null;
   const mother = db.pigeons.find(item => item.ringNo === pigeon.motherRing) || null;
   const children = db.pigeons.filter(item => item.fatherRing === ringNo || item.motherRing === ringNo);
-  return { pigeon, father, mother, children };
+  const breedingPlans = getPigeonBreedingPlans(db, ringNo);
+  return { pigeon, father, mother, children, breedingPlans };
 }
 function parseCsv(text) {
   const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
@@ -83,6 +87,56 @@ function validateImport(db, rows) {
     result.push({ ...row, _valid: errors.length === 0, _errors: errors });
   });
   return result;
+}
+
+function getAllAncestors(db, ringNo, visited = new Set()) {
+  if (visited.has(ringNo)) return [];
+  visited.add(ringNo);
+  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+  if (!pigeon) return [];
+  const ancestors = [];
+  if (pigeon.fatherRing) {
+    ancestors.push(pigeon.fatherRing);
+    ancestors.push(...getAllAncestors(db, pigeon.fatherRing, visited));
+  }
+  if (pigeon.motherRing) {
+    ancestors.push(pigeon.motherRing);
+    ancestors.push(...getAllAncestors(db, pigeon.motherRing, visited));
+  }
+  return ancestors;
+}
+
+function getAllDescendants(db, ringNo, visited = new Set()) {
+  if (visited.has(ringNo)) return [];
+  visited.add(ringNo);
+  const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
+  const descendants = children.map(c => c.ringNo);
+  children.forEach(c => {
+    descendants.push(...getAllDescendants(db, c.ringNo, visited));
+  });
+  return descendants;
+}
+
+function validateBreedingPlan(db, fatherRing, motherRing) {
+  const errors = [];
+  if (!fatherRing || !fatherRing.trim()) errors.push("父鸽足环号不能为空");
+  if (!motherRing || !motherRing.trim()) errors.push("母鸽足环号不能为空");
+  if (fatherRing && motherRing && fatherRing === motherRing) errors.push("父鸽和母鸽不能是同一只");
+  const fatherExists = db.pigeons.some(p => p.ringNo === fatherRing);
+  const motherExists = db.pigeons.some(p => p.ringNo === motherRing);
+  if (fatherRing && !fatherExists) errors.push("父鸽足环号不存在");
+  if (motherRing && !motherExists) errors.push("母鸽足环号不存在");
+  if (fatherExists && motherExists) {
+    const fatherDescendants = new Set(getAllDescendants(db, fatherRing));
+    if (fatherDescendants.has(motherRing)) errors.push("母鸽是父鸽的子代，不能反向作为父母");
+    const motherDescendants = new Set(getAllDescendants(db, motherRing));
+    if (motherDescendants.has(fatherRing)) errors.push("父鸽是母鸽的子代，不能反向作为父母");
+  }
+  return errors;
+}
+
+function getPigeonBreedingPlans(db, ringNo) {
+  return db.breedingPlans.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
 }
 
 const page = `<!doctype html>
@@ -143,11 +197,19 @@ const page = `<!doctype html>
     .filter-actions { display:flex; gap:8px; }
     .filter-actions button { width:100%; }
     .filter-summary { margin-top:10px; padding-top:10px; border-top:1px dashed var(--line); color:var(--muted); font-size:13px; }
-    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} }
+    .plan-list { display:grid; gap:8px; margin-top:8px; }
+    .plan-item { background:#f8fafb; border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+    .children-list { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; }
+    .breeding-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .plan-card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px; }
+    .plan-card h4 { margin:0 0 8px; font-size:15px; }
+    .plan-card .plan-meta { color:var(--muted); font-size:13px; margin-top:6px; }
+    .plan-card .plan-actions { margin-top:10px; display:flex; gap:8px; }
+    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} }
   </style>
 </head>
 <body>
-  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="importBtn" class="secondary">批量导入</button><button id="reload">刷新</button></div></header>
+  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="reload">刷新</button></div></header>
   <main>
     <form id="form">
       <h2>创建鸽只档案</h2>
@@ -215,6 +277,36 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           </div>
         </div>
         <div id="previewArea" style="margin-top:18px;"></div>
+      </div>
+    </div>
+  </div>
+  <div id="breedingModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>繁育配对计划</h2>
+          <button id="closeBreeding" class="secondary">关闭</button>
+        </div>
+        <div class="breeding-grid">
+          <div class="panel">
+            <h3>创建配对计划</h3>
+            <form id="breedingForm">
+              <label>父鸽足环号</label>
+              <input name="fatherRing" required placeholder="请输入父鸽足环号">
+              <label>母鸽足环号</label>
+              <input name="motherRing" required placeholder="请输入母鸽足环号">
+              <label>计划配对日期</label>
+              <input name="planDate" type="date">
+              <label>目标/备注</label>
+              <textarea name="remark" rows="3" placeholder="如：培育赛绩鸽、提纯血统等"></textarea>
+              <button style="margin-top:10px;">创建配对计划</button>
+            </form>
+          </div>
+          <div class="panel">
+            <h3>配对计划列表</h3>
+            <div id="breedingPlanList" style="max-height:420px; overflow-y:auto;"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -299,10 +391,16 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       });
     }
     function renderRelation(data) {
-      if (!data) { detail.innerHTML = '<h2>血统查询</h2><p class="meta">请输入足环号查看父母、子代、转让、疫苗和成绩。</p>'; return; }
+      if (!data) { detail.innerHTML = '<h2>血统查询</h2><p class="meta">请输入足环号查看父母、子代、配对计划、转让、疫苗和成绩。</p>'; return; }
       const p = data.pigeon;
       const vaccineHtml = p.vaccines.length ? p.vaccines.map(v => '<div class="vaccine-item"><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">备注：'+v.remark+'</span>':'')+'</div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
-      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div><div><b>子代</b> '+(data.children.map(c => c.ringNo).join("、") || "暂无")+'</div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="meta">转让：'+(p.transfers.map(t => t.from+"→"+t.to).join(" / ") || "暂无")+'</div><div class="meta">归巢：'+(p.races.map(r => r.event+" 第"+r.rank+"名").join(" / ") || "暂无")+'</div>';
+      const childrenHtml = data.children.length ? data.children.map(c => '<span class="pill">'+c.ringNo+'</span>').join(" ") : '<span class="meta">暂无已登记子代</span>';
+      const plansHtml = data.breedingPlans && data.breedingPlans.length ? data.breedingPlans.map(plan => {
+        const partner = plan.fatherRing === p.ringNo ? plan.motherRing : plan.fatherRing;
+        const role = plan.fatherRing === p.ringNo ? "父鸽" : "母鸽";
+        return '<div class="plan-item"><div><b>'+partner+'</b> <span class="meta">（'+role+'）</span></div><div class="meta">计划日期：'+plan.planDate+'</div>'+(plan.remark ? '<div class="meta">目标：'+plan.remark+'</div>' : '')+'</div>';
+      }).join("") : '<div class="vaccine-empty">暂无配对计划</div>';
+      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div><div class="section"><b>已登记子代</b><div class="children-list">'+childrenHtml+'</div></div><div class="section"><b>配对计划</b><div class="plan-list">'+plansHtml+'</div></div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="meta">转让：'+(p.transfers.map(t => t.from+"→"+t.to).join(" / ") || "暂无")+'</div><div class="meta">归巢：'+(p.races.map(r => r.event+" 第"+r.rank+"名").join(" / ") || "暂无")+'</div>';
     }
     async function load(){
       pigeons = await api("/api/pigeons");
@@ -352,6 +450,65 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     document.querySelector("#importBtn").onclick = () => { importModal.style.display = "block"; previewData = null; previewArea.innerHTML = ""; };
     document.querySelector("#closeImport").onclick = () => { importModal.style.display = "none"; };
     document.querySelector("#clearBtn").onclick = () => { csvInput.value = ""; previewArea.innerHTML = ""; previewData = null; };
+    const breedingModal = document.querySelector("#breedingModal");
+    const breedingForm = document.querySelector("#breedingForm");
+    const breedingPlanList = document.querySelector("#breedingPlanList");
+    document.querySelector("#breedingBtn").onclick = () => { breedingModal.style.display = "block"; loadBreedingPlans(); };
+    document.querySelector("#closeBreeding").onclick = () => { breedingModal.style.display = "none"; };
+    async function loadBreedingPlans() {
+      try {
+        const plans = await api("/api/breeding-plans");
+        renderBreedingPlans(plans);
+      } catch(e) {
+        breedingPlanList.innerHTML = '<div class="hint" style="color:var(--red);">加载失败：' + e.message + '</div>';
+      }
+    }
+    function renderBreedingPlans(plans) {
+      if (!plans || plans.length === 0) {
+        breedingPlanList.innerHTML = '<div class="vaccine-empty">暂无配对计划</div>';
+        return;
+      }
+      breedingPlanList.innerHTML = plans.map(plan => {
+        return '<div class="plan-card"><h4>'+plan.fatherRing+' × '+plan.motherRing+'</h4><div class="plan-meta">计划日期：'+plan.planDate+'</div>'+(plan.remark ? '<div class="plan-meta">目标：'+plan.remark+'</div>' : '')+'<div class="plan-meta">创建日期：'+plan.createdAt+'</div><div class="plan-actions"><button class="secondary danger" data-del-plan="'+plan.id+'">删除</button></div></div>';
+      }).join("");
+      document.querySelectorAll("[data-del-plan]").forEach(btn => btn.onclick = async () => {
+        if (!confirm("确定要删除这个配对计划吗？")) return;
+        try {
+          await api('/api/breeding-plans/'+encodeURIComponent(btn.dataset.delPlan), { method:'DELETE' });
+          loadBreedingPlans();
+          if (currentRingNo) {
+            try {
+              const data = await api('/api/pigeons/'+encodeURIComponent(currentRingNo)+'/relation');
+              renderRelation(data);
+            } catch(e) {}
+          }
+        } catch(e) {
+          alert("删除失败：" + e.message);
+        }
+      });
+    }
+    breedingForm.onsubmit = async event => {
+      event.preventDefault();
+      const formData = new FormData(breedingForm);
+      const fatherRing = formData.get("fatherRing") || "";
+      const motherRing = formData.get("motherRing") || "";
+      const planDate = formData.get("planDate") || "";
+      const remark = formData.get("remark") || "";
+      try {
+        await api("/api/breeding-plans", { method:"POST", body: JSON.stringify({ fatherRing, motherRing, planDate, remark }) });
+        breedingForm.reset();
+        loadBreedingPlans();
+        if (currentRingNo) {
+          try {
+            const data = await api('/api/pigeons/'+encodeURIComponent(currentRingNo)+'/relation');
+            renderRelation(data);
+          } catch(e) {}
+        }
+        alert("配对计划创建成功！");
+      } catch(e) {
+        alert("创建失败：" + e.message);
+      }
+    };
     function renderPreview(data) {
       if (!data || !data.rows || data.rows.length === 0) {
         previewArea.innerHTML = '<div class="hint" style="margin-top:12px;">未解析到任何数据行，请检查CSV格式。</div>';
@@ -534,6 +691,46 @@ const server = http.createServer(async (req, res) => {
       });
       if (successRows.length > 0) await saveDb(db);
       return sendJson(res, 200, { success: successRows.length, failed: failedRows.length, successRows, failedRows });
+    }
+    if (req.method === "GET" && url.pathname === "/api/breeding-plans") {
+      return sendJson(res, 200, db.breedingPlans);
+    }
+    if (req.method === "POST" && url.pathname === "/api/breeding-plans") {
+      const input = await body(req);
+      const fatherRing = (input.fatherRing || "").trim();
+      const motherRing = (input.motherRing || "").trim();
+      const errors = validateBreedingPlan(db, fatherRing, motherRing);
+      if (errors.length > 0) {
+        return sendJson(res, 400, { error: errors.join("、"), errors });
+      }
+      const plan = {
+        id: Date.now().toString(),
+        fatherRing,
+        motherRing,
+        planDate: input.planDate || new Date().toISOString().slice(0, 10),
+        remark: input.remark || "",
+        createdAt: new Date().toISOString().slice(0, 10)
+      };
+      db.breedingPlans.unshift(plan);
+      await saveDb(db);
+      return sendJson(res, 201, plan);
+    }
+    const breedingPlanMatch = url.pathname.match(/^\/api\/breeding-plans\/(.+)$/);
+    if (breedingPlanMatch && req.method === "DELETE") {
+      const planId = decodeURIComponent(breedingPlanMatch[1]);
+      const index = db.breedingPlans.findIndex(p => p.id === planId);
+      if (index === -1) return sendJson(res, 404, { error: "plan_not_found" });
+      db.breedingPlans.splice(index, 1);
+      await saveDb(db);
+      return sendJson(res, 200, { success: true });
+    }
+    const pigeonPlansMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/breeding-plans$/);
+    if (pigeonPlansMatch && req.method === "GET") {
+      const ringNo = decodeURIComponent(pigeonPlansMatch[1]);
+      const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+      if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
+      const plans = getPigeonBreedingPlans(db, ringNo);
+      return sendJson(res, 200, plans);
     }
     sendJson(res, 404, { error: "not_found" });
   } catch (error) {
