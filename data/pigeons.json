@@ -10,7 +10,8 @@
       "vaccines": [
         {
           "date": "2026-04-01",
-          "name": "新城疫"
+          "name": "新城疫",
+          "remark": "首次免疫"
         }
       ],
       "transfers": [
@@ -37,7 +38,13 @@
       "motherRing": "",
       "color": "雨点",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-05-15",
+          "name": "鸽痘",
+          "remark": "春季接种"
+        }
+      ],
       "transfers": [],
       "races": []
     },
@@ -48,7 +55,13 @@
       "motherRing": "",
       "color": "红轮",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-03-20",
+          "name": "新城疫",
+          "remark": "基础免疫"
+        }
+      ],
       "transfers": [],
       "races": []
     }
