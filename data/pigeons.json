@@ -23,6 +23,17 @@
       "races": []
     },
     {
+      "ringNo": "TEST-CHILD-M1",
+      "owner": "测试棚",
+      "fatherRing": "",
+      "motherRing": "TEST-PARENT",
+      "color": "红轮",
+      "loft": "测试棚A",
+      "vaccines": [],
+      "transfers": [],
+      "races": []
+    },
+    {
       "ringNo": "TEST-GGF",
       "owner": "测试棚",
       "fatherRing": "",

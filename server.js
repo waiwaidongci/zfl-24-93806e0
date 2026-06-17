@@ -125,7 +125,17 @@ function buildPedigree(db, ringNo) {
     childVisited.set(ringNo, true);
     const childPath = new Map();
     childPath.set("__currentPath__", [ringNo]);
-    return buildPedigreeNode(db, child.ringNo, -1, 0, childVisited, childPath);
+    const childNode = buildPedigreeNode(db, child.ringNo, -1, -1, childVisited, childPath);
+    const isFatherSide = child.fatherRing === ringNo;
+    const isMotherSide = child.motherRing === ringNo;
+    if (isFatherSide && isMotherSide) {
+      childNode.parentSide = "both";
+    } else if (isFatherSide) {
+      childNode.parentSide = "father";
+    } else {
+      childNode.parentSide = "mother";
+    }
+    return childNode;
   });
 
   return root;
@@ -1328,8 +1338,15 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       let childrenHtml = "";
       if (root.children && root.children.length > 0) {
         const childrenNodes = root.children.map(child => {
-          const isFather = child.pigeon?.fatherRing === root.ringNo;
-          return renderPedigreeNode(child, isFather ? "子代（父方）" : "子代（母方）");
+          let roleLabel;
+          if (child.parentSide === "both") {
+            roleLabel = "子代（父母方）";
+          } else if (child.parentSide === "father") {
+            roleLabel = "子代（父方）";
+          } else {
+            roleLabel = "子代（母方）";
+          }
+          return renderPedigreeNode(child, roleLabel);
         }).join("");
         childrenHtml = '<div class="pedigree-children">' +
           '<div class="pedigree-children-title">子代（共 ' + root.children.length + ' 只）</div>' +
