@@ -26,6 +26,12 @@ async function loadDb() {
   const db = JSON.parse(await readFile(dbPath, "utf8"));
   if (!db.breedingPlans) db.breedingPlans = [];
   if (!db.raceEvents) db.raceEvents = [];
+  db.pigeons.forEach(p => {
+    if (!p.transfers) p.transfers = [];
+    p.transfers.forEach(t => {
+      if (!t.status) { t.status = "confirmed"; t.id = t.id || Date.now().toString() + Math.random().toString(36).slice(2,6); t.createdAt = t.createdAt || t.date; t.confirmedAt = t.confirmedAt || t.date; t.cancelledAt = t.cancelledAt || null; }
+    });
+  });
   return db;
 }
 async function saveDb(db) { await writeFile(dbPath, JSON.stringify(db, null, 2)); }
@@ -395,6 +401,18 @@ const page = `<!doctype html>
     .pedigree-breadcrumb .crumb { background:#eef3f7; border:1px solid var(--line); padding:3px 10px; border-radius:999px; color:var(--accent); cursor:pointer; }
     .pedigree-breadcrumb .crumb.current { background:var(--accent); color:#fff; cursor:default; }
     .pedigree-breadcrumb .sep { color:var(--muted); }
+    .transfer-list { display:grid; gap:6px; margin-top:8px; }
+    .transfer-item { background:#f8fafb; border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; }
+    .transfer-item .transfer-info { font-size:13px; }
+    .transfer-item .transfer-actions { display:flex; gap:6px; }
+    .transfer-empty { color:var(--muted); font-size:13px; background:#f8fafb; border:1px dashed var(--line); border-radius:6px; padding:10px; text-align:center; }
+    .transfer-item.pending { background:#fffbf0; border-color:#e6d391; }
+    .transfer-item.confirmed { background:#f8fafb; }
+    .transfer-item.cancelled { background:#f5f5f5; opacity:0.7; }
+    .status-badge { display:inline-block; border-radius:4px; padding:2px 8px; font-size:11px; font-weight:700; }
+    .status-badge.pending { background:#fff8e6; color:#9a7b1a; border:1px solid #e6d391; }
+    .status-badge.confirmed { background:#f0faf4; color:var(--green); border:1px solid #a8d5ba; }
+    .status-badge.cancelled { background:#f5f5f5; color:var(--muted); border:1px solid var(--line); text-decoration:line-through; }
     @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} }
   </style>
 </head>
@@ -701,11 +719,34 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       updateFilterSummary(filtered);
       cards.innerHTML = filtered.map(p => {
         const vaccineSummary = p.vaccines.length ? p.vaccines.map(v => '<div class="vaccine-item"><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">'+v.remark+'</span>':'')+'</div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
-        return '<article class="card"><h3>'+p.ringNo+'</h3><span class="pill">'+p.owner+'</span><div class="meta">'+p.color+' · '+p.loft+'</div><div>父：'+(p.fatherRing || "未登记")+'</div><div>母：'+(p.motherRing || "未登记")+'</div><div class="section"><b>疫苗接种</b><div class="vaccine-list">'+vaccineSummary+'</div><label>疫苗名称</label><input data-vname="'+p.ringNo+'" placeholder="如新城疫、鸽痘"><label>接种日期</label><input data-vdate="'+p.ringNo+'" type="date"><label>备注</label><input data-vremark="'+p.ringNo+'" placeholder="选填"><button data-vaccine="'+p.ringNo+'">保存疫苗记录</button></div><label>录入转让</label><input data-to="'+p.ringNo+'" placeholder="新归属人"><button data-transfer="'+p.ringNo+'">保存转让</button></article>';
+        const sortedTransfers = [...p.transfers].sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date));
+        const pendingCount = p.transfers.filter(t => t.status === "pending").length;
+        const transferHeaderExtra = pendingCount > 0 ? ' <span class="status-badge pending" style="margin-left:6px;">待处理 '+pendingCount+'</span>' : '';
+        const transferListHtml = sortedTransfers.length ? sortedTransfers.map(t => {
+          const status = t.status || "confirmed";
+          const statusLabel = status === "pending" ? "待确认" : status === "confirmed" ? "已确认" : "已取消";
+          const statusBadge = '<span class="status-badge '+status+'">'+statusLabel+'</span>';
+          const actions = status === "pending" ? '<div class="transfer-actions"><button class="btn-small" data-confirm-transfer="'+p.ringNo+'|'+t.id+'">确认</button><button class="btn-small secondary" data-cancel-transfer="'+p.ringNo+'|'+t.id+'">取消</button></div>' : '';
+          return '<div class="transfer-item '+status+'"><div class="transfer-info">'+statusBadge+' <b>'+t.from+'</b> → <b>'+t.to+'</b><br><span class="meta">申请日期：'+(t.createdAt||t.date)+(t.confirmedAt?' · 确认日期：'+t.confirmedAt:'')+(t.cancelledAt?' · 取消日期：'+t.cancelledAt:'')+'</span></div>'+actions+'</div>';
+        }).join("") : '<div class="transfer-empty">暂无转让记录</div>';
+        return '<article class="card"><h3>'+p.ringNo+'</h3><span class="pill">'+p.owner+'</span><div class="meta">'+p.color+' · '+p.loft+'</div><div>父：'+(p.fatherRing || "未登记")+'</div><div>母：'+(p.motherRing || "未登记")+'</div><div class="section"><b>疫苗接种</b><div class="vaccine-list">'+vaccineSummary+'</div><label>疫苗名称</label><input data-vname="'+p.ringNo+'" placeholder="如新城疫、鸽痘"><label>接种日期</label><input data-vdate="'+p.ringNo+'" type="date"><label>备注</label><input data-vremark="'+p.ringNo+'" placeholder="选填"><button data-vaccine="'+p.ringNo+'">保存疫苗记录</button></div><div class="section"><b>转让记录</b>'+transferHeaderExtra+'<div class="transfer-list">'+transferListHtml+'</div><label>新归属人</label><input data-to="'+p.ringNo+'" placeholder="输入新归属人"><button data-transfer="'+p.ringNo+'">提交转让</button></div></article>';
       }).join("");
       document.querySelectorAll("[data-transfer]").forEach(btn => btn.onclick = async () => {
-        const ringNo = btn.dataset.transfer; const to = document.querySelector('[data-to="'+ringNo+'"]').value;
-        await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers', { method:'POST', body: JSON.stringify({ to }) }); await load();
+        const ringNo = btn.dataset.transfer; const to = document.querySelector('[data-to="'+ringNo+'"]').value.trim();
+        if (!to) { alert("请输入新归属人"); return; }
+        try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers', { method:'POST', body: JSON.stringify({ to }) }); }
+        catch(e) { alert("提交失败："+e.message); return; }
+        document.querySelector('[data-to="'+ringNo+'"]').value = ''; await load();
+      });
+      document.querySelectorAll("[data-confirm-transfer]").forEach(btn => btn.onclick = async () => {
+        const [ringNo, transferId] = btn.dataset.confirmTransfer.split("|");
+        if (!confirm("确认将此鸽转让？确认后鸽主将变更。")) return;
+        try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers/'+encodeURIComponent(transferId)+'/confirm', { method:'PUT' }); await load(); } catch(e) { alert("确认失败："+e.message); }
+      });
+      document.querySelectorAll("[data-cancel-transfer]").forEach(btn => btn.onclick = async () => {
+        const [ringNo, transferId] = btn.dataset.cancelTransfer.split("|");
+        if (!confirm("确定取消此转让申请？")) return;
+        try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers/'+encodeURIComponent(transferId)+'/cancel', { method:'PUT' }); await load(); } catch(e) { alert("取消失败："+e.message); }
       });
       document.querySelectorAll("[data-vaccine]").forEach(btn => btn.onclick = async () => {
         const ringNo = btn.dataset.vaccine;
@@ -747,7 +788,20 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       } else {
         raceResultsHtml = '<div class="race-result-empty">暂无赛事成绩</div>';
       }
-      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div><div class="section"><b>已登记子代</b><div class="children-list">'+childrenHtml+'</div></div><div class="section"><b>配对计划</b><div class="plan-list">'+plansHtml+'</div></div><div class="section"><b>赛事成绩</b>'+raceResultsHtml+'</div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="meta">转让：'+(p.transfers.map(t => t.from+"→"+t.to).join(" / ") || "暂无")+'</div>';
+      const sortedDetailTransfers = [...p.transfers].sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date));
+      const pendingDetailCount = p.transfers.filter(t => t.status === "pending").length;
+      const detailTransferHeaderExtra = pendingDetailCount > 0 ? ' <span class="status-badge pending" style="margin-left:6px;">待处理 '+pendingDetailCount+'</span>' : '';
+      const transferDetailHtml = sortedDetailTransfers.length ? sortedDetailTransfers.map(t => {
+        const status = t.status || "confirmed";
+        const statusLabel = status === "pending" ? "待确认" : status === "confirmed" ? "已确认" : "已取消";
+        const statusBadge = '<span class="status-badge '+status+'">'+statusLabel+'</span>';
+        const actions = status === "pending" ? '<div class="transfer-actions"><button class="btn-small" data-detail-confirm="'+p.ringNo+'|'+t.id+'">确认转让</button><button class="btn-small secondary" data-detail-cancel="'+p.ringNo+'|'+t.id+'">取消转让</button></div>' : '';
+        let dateInfo = '申请日期：'+(t.createdAt||t.date);
+        if (t.confirmedAt) dateInfo += ' · 确认日期：'+t.confirmedAt;
+        if (t.cancelledAt) dateInfo += ' · 取消日期：'+t.cancelledAt;
+        return '<div class="transfer-item '+status+'"><div class="transfer-info">'+statusBadge+' <b>'+t.from+'</b> → <b>'+t.to+'</b><br><span class="meta">'+dateInfo+'</span></div>'+actions+'</div>';
+      }).join("") : '<div class="transfer-empty">暂无转让记录</div>';
+      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div><div class="section"><b>已登记子代</b><div class="children-list">'+childrenHtml+'</div></div><div class="section"><b>配对计划</b><div class="plan-list">'+plansHtml+'</div></div><div class="section"><b>赛事成绩</b>'+raceResultsHtml+'</div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="section"><b>转让审核记录</b>'+detailTransferHeaderExtra+'<div class="transfer-list">'+transferDetailHtml+'</div></div>';
       detail.querySelectorAll("[data-view-event], [data-event-link]").forEach(el => {
         el.onclick = (e) => {
           e.stopPropagation();
@@ -757,6 +811,16 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           loadRaceEvents();
           setTimeout(() => loadRaceDetail(eventId), 100);
         };
+      });
+      detail.querySelectorAll("[data-detail-confirm]").forEach(btn => btn.onclick = async () => {
+        const [ringNo, transferId] = btn.dataset.detailConfirm.split("|");
+        if (!confirm("确认将此鸽转让？确认后鸽主将变更。")) return;
+        try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers/'+encodeURIComponent(transferId)+'/confirm', { method:'PUT' }); await load(); } catch(e) { alert("确认失败："+e.message); }
+      });
+      detail.querySelectorAll("[data-detail-cancel]").forEach(btn => btn.onclick = async () => {
+        const [ringNo, transferId] = btn.dataset.detailCancel.split("|");
+        if (!confirm("确定取消此转让申请？")) return;
+        try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers/'+encodeURIComponent(transferId)+'/cancel', { method:'PUT' }); await load(); } catch(e) { alert("取消失败："+e.message); }
       });
     }
     async function load(){
@@ -1477,14 +1541,49 @@ const server = http.createServer(async (req, res) => {
       if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
       const input = await body(req);
       if (actionMatch[2] === "transfers") {
-        const transfer = { date: input.date || new Date().toISOString().slice(0, 10), from: pigeon.owner, to: input.to };
-        pigeon.owner = input.to;
+        const today = new Date().toISOString().slice(0, 10);
+        const to = (input.to || "").trim();
+        if (!to) return sendJson(res, 400, { error: "新归属人不能为空" });
+        if (to === pigeon.owner) return sendJson(res, 400, { error: "新归属人与当前鸽主相同，无需转让" });
+        const hasPending = pigeon.transfers.some(t => t.status === "pending");
+        if (hasPending) return sendJson(res, 400, { error: "该鸽只已有待确认的转让申请，请先处理后再提交" });
+        const transfer = { id: Date.now().toString(), date: input.date || today, from: pigeon.owner, to, status: "pending", createdAt: today, confirmedAt: null, cancelledAt: null };
         pigeon.transfers.push(transfer);
       }
       if (actionMatch[2] === "races") pigeon.races.push({ date: input.date || new Date().toISOString().slice(0, 10), event: input.event, distance: Number(input.distance || 0), returnTime: input.returnTime || "", rank: Number(input.rank || 0) });
       if (actionMatch[2] === "vaccines") pigeon.vaccines.push({ date: input.date || new Date().toISOString().slice(0, 10), name: input.name, remark: input.remark || "" });
       await saveDb(db);
       return sendJson(res, 200, pigeon);
+    }
+    const transferConfirmMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/transfers\/([^/]+)\/confirm$/);
+    if (transferConfirmMatch && req.method === "PUT") {
+      const ringNo = decodeURIComponent(transferConfirmMatch[1]);
+      const transferId = decodeURIComponent(transferConfirmMatch[2]);
+      const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+      if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
+      const transfer = pigeon.transfers.find(t => t.id === transferId);
+      if (!transfer) return sendJson(res, 404, { error: "transfer_not_found" });
+      if (transfer.status !== "pending") return sendJson(res, 400, { error: "只能确认待确认的转让" });
+      if (pigeon.owner !== transfer.from) return sendJson(res, 400, { error: "当前鸽主已变更，与转让申请不一致，请取消本次申请" });
+      transfer.status = "confirmed";
+      transfer.confirmedAt = new Date().toISOString().slice(0, 10);
+      pigeon.owner = transfer.to;
+      await saveDb(db);
+      return sendJson(res, 200, transfer);
+    }
+    const transferCancelMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/transfers\/([^/]+)\/cancel$/);
+    if (transferCancelMatch && req.method === "PUT") {
+      const ringNo = decodeURIComponent(transferCancelMatch[1]);
+      const transferId = decodeURIComponent(transferCancelMatch[2]);
+      const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+      if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
+      const transfer = pigeon.transfers.find(t => t.id === transferId);
+      if (!transfer) return sendJson(res, 404, { error: "transfer_not_found" });
+      if (transfer.status !== "pending") return sendJson(res, 400, { error: "只能取消待确认的转让" });
+      transfer.status = "cancelled";
+      transfer.cancelledAt = new Date().toISOString().slice(0, 10);
+      await saveDb(db);
+      return sendJson(res, 200, transfer);
     }
     if (req.method === "POST" && url.pathname === "/api/pigeons/import/preview") {
       const input = await body(req);
