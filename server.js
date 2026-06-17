@@ -44,6 +44,10 @@ function sendJson(res, status, data) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(data, null, 2));
 }
+function localDateString(date = new Date()) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
 function relation(db, ringNo) {
   const pigeon = db.pigeons.find(item => item.ringNo === ringNo);
   if (!pigeon) return null;
@@ -1541,7 +1545,7 @@ const server = http.createServer(async (req, res) => {
       if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
       const input = await body(req);
       if (actionMatch[2] === "transfers") {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = localDateString();
         const to = (input.to || "").trim();
         if (!to) return sendJson(res, 400, { error: "新归属人不能为空" });
         if (to === pigeon.owner) return sendJson(res, 400, { error: "新归属人与当前鸽主相同，无需转让" });
@@ -1566,7 +1570,7 @@ const server = http.createServer(async (req, res) => {
       if (transfer.status !== "pending") return sendJson(res, 400, { error: "只能确认待确认的转让" });
       if (pigeon.owner !== transfer.from) return sendJson(res, 400, { error: "当前鸽主已变更，与转让申请不一致，请取消本次申请" });
       transfer.status = "confirmed";
-      transfer.confirmedAt = new Date().toISOString().slice(0, 10);
+      transfer.confirmedAt = localDateString();
       pigeon.owner = transfer.to;
       await saveDb(db);
       return sendJson(res, 200, transfer);
@@ -1581,7 +1585,7 @@ const server = http.createServer(async (req, res) => {
       if (!transfer) return sendJson(res, 404, { error: "transfer_not_found" });
       if (transfer.status !== "pending") return sendJson(res, 400, { error: "只能取消待确认的转让" });
       transfer.status = "cancelled";
-      transfer.cancelledAt = new Date().toISOString().slice(0, 10);
+      transfer.cancelledAt = localDateString();
       await saveDb(db);
       return sendJson(res, 200, transfer);
     }
