@@ -38,13 +38,7 @@
       "motherRing": "",
       "color": "雨点",
       "loft": "种鸽棚",
-      "vaccines": [
-        {
-          "date": "2026-05-15",
-          "name": "鸽痘",
-          "remark": "春季接种"
-        }
-      ],
+      "vaccines": [],
       "transfers": [],
       "races": []
     },
@@ -55,25 +49,25 @@
       "motherRing": "",
       "color": "红轮",
       "loft": "种鸽棚",
-      "vaccines": [
-        {
-          "date": "2026-03-20",
-          "name": "新城疫",
-          "remark": "基础免疫"
-        }
-      ],
+      "vaccines": [],
       "transfers": [],
       "races": []
     }
   ],
-  "breedingPlans": [
+  "breedingPlans": [],
+  "raceEvents": [
     {
-      "id": "1781686886277",
-      "fatherRing": "CHN-2022-188",
-      "motherRing": "CHN-2023-512",
-      "planDate": "2026-07-01",
-      "remark": "培育赛绩鸽后代",
-      "createdAt": "2026-06-17"
+      "id": "1781693303369",
+      "name": "120公里训放测试",
+      "date": "2026-06-01",
+      "distance": 125,
+      "results": [
+        {
+          "ringNo": "CHN-2026-001",
+          "returnTime": "10:00",
+          "rank": 5
+        }
+      ]
     }
   ]
 }
