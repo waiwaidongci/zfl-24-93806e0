@@ -1199,6 +1199,10 @@ const page = `<!doctype html>
           <button id="closeImport" class="secondary">关闭</button>
         </div>
         <div>
+          <div style="display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+            <button id="downloadTemplateBtn" class="secondary">↓ 下载CSV模板</button>
+            <button id="fillSampleBtn" class="secondary">✎ 填入示例数据并预览</button>
+          </div>
           <label>粘贴CSV格式文本（第一行为表头）</label>
           <textarea id="csvInput" class="csv-input" placeholder="足环号,鸽主,父环号,母环号,羽色,棚号"></textarea>
           <div class="hint">
@@ -1209,7 +1213,7 @@ const page = `<!doctype html>
             <summary class="hint">查看示例CSV</summary>
             <div class="code-block">足环号,鸽主,父环号,母环号,羽色,棚号
 CHN-2026-100,北岸棚,CHN-2022-188,CHN-2023-512,灰,北岸A棚
-CHN-2026-101,北岸棚,,雨点,北岸B棚
+CHN-2026-101,北岸棚,,,雨点,北岸B棚
 CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           </details>
           <div style="margin-top:14px; display:flex; gap:10px;">
@@ -3095,6 +3099,35 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         load();
       };
     }
+    document.querySelector("#downloadTemplateBtn").onclick = async function() {
+      try {
+        const res = await fetch("/api/pigeons/import/template");
+        if (!res.ok) throw new Error("下载失败");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const filename = res.headers.get("Content-Disposition")?.match(/filename="(.+)"/)?.[1] || "pigeon-import-template.csv";
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast("success", "模板下载成功", "请在Excel或其他表格软件中编辑模板后，复制内容粘贴到上方文本框");
+      } catch(e) {
+        alert("模板下载失败：" + e.message);
+      }
+    };
+    document.querySelector("#fillSampleBtn").onclick = async function() {
+      try {
+        const data = await api("/api/pigeons/import/sample");
+        csvInput.value = data.csv;
+        const previewData = await api("/api/pigeons/import/preview", { method:"POST", body: JSON.stringify({ csv: data.csv }) });
+        renderPreview(previewData);
+      } catch(e) {
+        alert("填充示例数据失败：" + e.message);
+      }
+    };
     document.querySelector("#previewBtn").onclick = async function() {
       if (!csvInput.value.trim()) {
         previewArea.innerHTML = '<div class="hint" style="margin-top:12px;">请先粘贴CSV文本。</div>';
@@ -3852,6 +3885,26 @@ const server = http.createServer(async (req, res) => {
       const invalid = total - valid;
       const duplicates = validated.filter(r => r._errors.some(e => e.includes("重复") || e.includes("已存在"))).length;
       return sendJson(res, 200, { total, valid, invalid, duplicates, rows: validated });
+    }
+    if (req.method === "GET" && url.pathname === "/api/pigeons/import/template") {
+      const templateHeader = "足环号,鸽主,父环号,母环号,羽色,棚号";
+      const filename = `pigeon-import-template-${new Date().toISOString().slice(0,10)}.csv`;
+      const bom = "\uFEFF";
+      res.writeHead(200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`
+      });
+      return res.end(bom + templateHeader + "\r\n");
+    }
+    if (req.method === "GET" && url.pathname === "/api/pigeons/import/sample") {
+      const sampleCsv = `足环号,鸽主,父环号,母环号,羽色,棚号
+CHN-2026-100,北岸棚,CHN-2022-188,CHN-2023-512,灰,北岸A棚
+CHN-2026-101,北岸棚,,,雨点,北岸B棚
+CHN-2026-102,南岸棚,,,绛,南岸鸽棚
+CHN-2026-103,北岸棚,CHN-2022-188,,白花,北岸A棚
+CHN-2026-104,育种棚,,CHN-2023-512,红轮,种鸽棚
+CHN-2026-105,育种棚,CHN-2022-188,CHN-2023-512,石板,种鸽棚`;
+      return sendJson(res, 200, { csv: sampleCsv });
     }
     if (req.method === "POST" && url.pathname === "/api/pigeons/import/commit") {
       const input = await body(req);
