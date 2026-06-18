@@ -1600,45 +1600,97 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       async syncItem(item) {
         this.update(item.id, { status: "syncing", result: null, conflict: null, error: null });
         try {
-          const res = await fetch(item.path, {
-            method: item.method,
+          var batchRes = await fetch("/api/offline/sync", {
+            method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: item.payload ? JSON.stringify(item.payload) : undefined
+            body: JSON.stringify({ items: [item] })
           });
-          const data = await res.json().catch(() => ({}));
-          if (res.ok) {
-            this.update(item.id, { status: "success", result: data, conflict: null, error: null });
-            return { success: true, item, data };
-          } else {
-            const ringExists = data.error === "ring_exists" || res.status === 409;
-            if (ringExists || data.error === "pigeon_not_found") {
-              this.update(item.id, { status: "conflict", conflict: { kind: data.error, message: data.error === "ring_exists" ? "足环号已存在" : data.error === "pigeon_not_found" ? "鸽只档案不存在" : "冲突", serverData: null }, error: null });
-              return { conflict: true, item, data };
+          var batchData = await batchRes.json().catch(function() { return { results: [] }; });
+          if (batchRes.ok && batchData.results && batchData.results.length > 0) {
+            var r = batchData.results[0];
+            if (r.status === "success") {
+              this.update(item.id, { status: "success", result: r.data || null, conflict: null, error: null });
+              return { success: true, item: item, data: r.data };
+            } else if (r.status === "conflict") {
+              var conflictMsg = r.conflict && r.conflict.message ? r.conflict.message : "冲突";
+              if (r.conflict && r.conflict.kind === "ring_exists" && !r.conflict.localPayload) {
+                r.conflict.localPayload = item.payload;
+              }
+              this.update(item.id, { status: "conflict", conflict: r.conflict, error: null });
+              return { conflict: true, item: item, data: r.conflict };
+            } else if (r.status === "error") {
+              this.update(item.id, { status: "error", conflict: null, error: r.error || "同步失败" });
+              return { error: true, item: item, message: r.error || "同步失败" };
             }
-            if (res.status >= 500) {
-              this.update(item.id, { status: "pending", error: data.error || "服务器错误", conflict: null });
-              return { retry: true, item };
-            }
-            this.update(item.id, { status: "error", error: data.error || "请求失败", conflict: null });
-            return { error: true, item, message: data.error || "请求失败" };
           }
+          this.update(item.id, { status: "pending", error: "同步响应异常", conflict: null });
+          return { retry: true, item: item };
         } catch (e) {
-          this.update(item.id, { status: "pending", error: e.message || "网络错误", conflict: null });
-          return { retry: true, item };
+          this.update(item.id, { status: "pending", error: (e && e.message) || "网络错误", conflict: null });
+          return { retry: true, item: item };
         }
       }
       async syncBatch(items) {
         this.isSyncing = true;
         this.notifyChange();
-        const batch = items || this.getPendingAndConflictItems();
-        const summary = { total: batch.length, success: 0, conflicts: 0, errors: 0, retries: 0, results: [] };
-        for (const item of batch) {
-          const result = await this.syncItem(item);
-          summary.results.push(result);
-          if (result.success) summary.success++;
-          else if (result.conflict) summary.conflicts++;
-          else if (result.error) summary.errors++;
-          else if (result.retry) summary.retries++;
+        var batch = items || this.getPendingAndConflictItems();
+        var summary = { total: batch.length, success: 0, conflicts: 0, errors: 0, retries: 0, results: [] };
+        if (batch.length === 0) {
+          this.isSyncing = false;
+          this.notifyChange();
+          return summary;
+        }
+        try {
+          var batchRes = await fetch("/api/offline/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ items: batch })
+          });
+          var batchData = await batchRes.json().catch(function() { return { results: [] }; });
+          if (batchRes.ok && batchData.results && batchData.results.length > 0) {
+            for (var i = 0; i < batchData.results.length; i++) {
+              var r = batchData.results[i];
+              var origItem = batch[i];
+              if (!origItem) continue;
+              var itemResult = { item: origItem };
+              if (r.status === "success") {
+                this.update(origItem.id, { status: "success", result: r.data || null, conflict: null, error: null });
+                summary.success++;
+                itemResult.success = true;
+                itemResult.data = r.data;
+              } else if (r.status === "conflict") {
+                if (r.conflict && r.conflict.kind === "ring_exists" && !r.conflict.localPayload) {
+                  r.conflict.localPayload = origItem.payload;
+                }
+                this.update(origItem.id, { status: "conflict", conflict: r.conflict, error: null });
+                summary.conflicts++;
+                itemResult.conflict = true;
+                itemResult.data = r.conflict;
+              } else if (r.status === "error") {
+                this.update(origItem.id, { status: "error", conflict: null, error: r.error || "同步失败" });
+                summary.errors++;
+                itemResult.error = true;
+                itemResult.message = r.error || "同步失败";
+              } else {
+                this.update(origItem.id, { status: "pending", error: "未知状态", conflict: null });
+                summary.retries++;
+                itemResult.retry = true;
+              }
+              summary.results.push(itemResult);
+            }
+          } else {
+            batch.forEach(function(it) {
+              this.update(it.id, { status: "pending", error: "同步响应异常", conflict: null });
+              summary.retries++;
+              summary.results.push({ retry: true, item: it });
+            }.bind(this));
+          }
+        } catch (e) {
+          batch.forEach(function(it) {
+            this.update(it.id, { status: "pending", error: (e && e.message) || "网络错误", conflict: null });
+            summary.retries++;
+            summary.results.push({ retry: true, item: it });
+          }.bind(this));
         }
         this.isSyncing = false;
         this.notifyChange();
@@ -1722,12 +1774,15 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     }
     function renderConflictDetail(item) {
       const c = item.conflict || {};
-      if (c.kind === "ring_exists" && c.localPayload && c.serverData) {
+      const kind = c.kind || "";
+      const local = c.localPayload || item.payload || {};
+      const server = c.serverData;
+      if (kind === "ring_exists" && local && server) {
         const keys = ["ringNo", "owner", "fatherRing", "motherRing", "color", "loft"];
         const labels = { ringNo: "足环号", owner: "鸽主", fatherRing: "父环号", motherRing: "母环号", color: "羽色", loft: "棚号" };
         const rows = keys.map(k => {
-          const localVal = c.localPayload[k] || "";
-          const serverVal = c.serverData[k] || "";
+          const localVal = local[k] || "";
+          const serverVal = server[k] || "";
           const same = localVal === serverVal;
           let cellContent;
           if (same) {
@@ -1743,18 +1798,105 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         return '<div class="conflict-detail">' +
           '<h5>⚠ 足环号冲突：服务器已存在同号档案</h5>' +
           '<div class="compare">' +
-          '<div class="col local"><div class="label">本地待提交</div>' + rows + '</div>' +
+          '<div class="col local"><div class="label">本地待提交 vs 服务器</div>' + rows + '</div>' +
           '</div>' +
+          '<p class="meta" style="margin-top:8px;font-size:12px;color:var(--muted);">若选择忽略冲突重试：将跳过此创建操作（档案已存在）。</p>' +
           '<div class="actions">' +
-          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃本地操作</button>' +
-          '<button class="btn-small" data-retry="' + item.id + '">忽略冲突重试</button>' +
+          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃此操作</button>' +
+          '<button class="btn-small" data-retry="' + item.id + '">忽略并完成同步</button>' +
+          '</div>' +
+          '</div>';
+      }
+      if (kind === "vaccine_duplicate" && local && server) {
+        const rows = [
+          { label: "疫苗名称", l: local.name, s: server.name },
+          { label: "接种日期", l: local.date, s: server.date },
+          { label: "备注", l: local.remark || "", s: server.remark || "" }
+        ].map(f => {
+          const lv = f.l || "";
+          const sv = f.s || "";
+          const same = lv === sv;
+          let cell = same ? (lv || '<span class="meta">-</span>') :
+            ((lv ? '<b style="color:var(--accent)">' + lv + '</b>' : '<span class="meta">-</span>') + (sv ? ' → <b style="color:var(--yellow)">' + sv + '</b>' : ''));
+          return '<div class="row"><span class="k">' + f.label + '</span><span>' + cell + '</span></div>';
+        }).join("");
+        return '<div class="conflict-detail">' +
+          '<h5>⚠ 疫苗重复：同日同名称疫苗已接种</h5>' +
+          '<div class="compare">' +
+          '<div class="col local"><div class="label">本地待提交 vs 服务器</div>' + rows + '</div>' +
+          '</div>' +
+          '<p class="meta" style="margin-top:8px;font-size:12px;color:var(--muted);">若备注信息有更新，可选择忽略冲突强制追加一条记录。</p>' +
+          '<div class="actions">' +
+          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃本地（不重复接种）</button>' +
+          '<button class="btn-small" data-retry="' + item.id + '">强制追加记录</button>' +
+          '</div>' +
+          '</div>';
+      }
+      if (kind === "race_duplicate" && local && server) {
+        const rows = [
+          { label: "赛事名称", l: local.event, s: server.event },
+          { label: "日期", l: local.date, s: server.date },
+          { label: "空距(公里)", l: String(local.distance || 0), s: String(server.distance || 0) },
+          { label: "归巢时间", l: local.returnTime || "", s: server.returnTime || "" },
+          { label: "名次", l: String(local.rank || 0), s: String(server.rank || 0) }
+        ].map(f => {
+          const lv = f.l || "";
+          const sv = f.s || "";
+          const same = lv === sv;
+          let cell = same ? (lv || '<span class="meta">-</span>') :
+            ((lv ? '<b style="color:var(--accent)">' + lv + '</b>' : '<span class="meta">-</span>') + (sv ? ' → <b style="color:var(--yellow)">' + sv + '</b>' : ''));
+          return '<div class="row"><span class="k">' + f.label + '</span><span>' + cell + '</span></div>';
+        }).join("");
+        return '<div class="conflict-detail">' +
+          '<h5>⚠ 成绩重复：同一赛事日期已有成绩记录</h5>' +
+          '<div class="compare">' +
+          '<div class="col local"><div class="label">本地待提交 vs 服务器</div>' + rows + '</div>' +
+          '</div>' +
+          '<p class="meta" style="margin-top:8px;font-size:12px;color:var(--muted);">如为重复录入建议放弃。如为更正成绩可强制追加，之后再在档案中整理。</p>' +
+          '<div class="actions">' +
+          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃本地（不重复录入）</button>' +
+          '<button class="btn-small" data-retry="' + item.id + '">强制追加成绩</button>' +
+          '</div>' +
+          '</div>';
+      }
+      if (kind === "owner_same") {
+        return '<div class="conflict-detail">' +
+          '<h5>⚠ 无需转让：鸽主已是目标归属人</h5>' +
+          '<div class="meta" style="margin-bottom:8px;">当前鸽主：<b>' + (server && server.owner ? server.owner : "—") + '</b></div>' +
+          '<div class="actions">' +
+          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃此转让申请</button>' +
+          '</div>' +
+          '</div>';
+      }
+      if (kind === "has_pending") {
+        const list = (server && Array.isArray(server)) ? server : [];
+        const listHtml = list.map(t =>
+          '<div class="row"><span class="k">' + (t.date || "") + '</span><span>' + (t.from || "") + ' → ' + (t.to || "") + '（待确认）</span></div>'
+        ).join("");
+        return '<div class="conflict-detail">' +
+          '<h5>⚠ 转让冲突：已有待确认的转让申请</h5>' +
+          (listHtml ? '<div class="col" style="margin-bottom:8px;"><div class="label">待处理转让</div>' + listHtml + '</div>' : '') +
+          '<p class="meta" style="margin:8px 0;font-size:12px;color:var(--muted);">请先确认或取消现有转让申请后再提交。</p>' +
+          '<div class="actions">' +
+          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃此转让申请</button>' +
+          '<button class="btn-small" data-retry="' + item.id + '">仍要再提交</button>' +
+          '</div>' +
+          '</div>';
+      }
+      if (kind === "pigeon_not_found") {
+        return '<div class="conflict-detail">' +
+          '<h5>⚠ 鸽只档案不存在：可能已被删除</h5>' +
+          '<div class="meta" style="margin-bottom:8px;">足环号：<b>' + (item.ringNo || "—") + '</b><br>建议先查询确认该鸽只档案状态。</div>' +
+          '<div class="actions">' +
+          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃此操作</button>' +
+          '<button class="btn-small" data-retry="' + item.id + '">重试（如档案已重建）</button>' +
           '</div>' +
           '</div>';
       }
       const hint = c.message || "服务器数据与本地不一致";
       let serverInfo = "";
-      if (c.serverData) {
-        serverInfo = '<div class="meta" style="margin-bottom:8px;">服务器最新状态：' + JSON.stringify(c.serverData).slice(0, 200) + '</div>';
+      if (server) {
+        serverInfo = '<div class="meta" style="margin-bottom:8px;">服务器最新状态：' + JSON.stringify(server).slice(0, 200) + '</div>';
       }
       return '<div class="conflict-detail">' +
         '<h5>⚠ 冲突：' + hint + '</h5>' +
@@ -1802,9 +1944,20 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           const id = btn.dataset.retry;
           const item = offlineQueue.queue.find(i => i.id === id);
           if (!item) return;
+          const conflict = item.conflict || {};
+          const forceKinds = ["ring_exists", "vaccine_duplicate", "race_duplicate", "has_pending"];
+          if (conflict.kind && forceKinds.indexOf(conflict.kind) >= 0) {
+            item.payload = item.payload || {};
+            item.payload.__forceSync = true;
+            offlineQueue.update(id, { payload: item.payload });
+          }
           offlineQueue.update(id, { status: "pending", conflict: null, error: null });
           renderOfflineQueue();
           const result = await offlineQueue.syncItem(item);
+          if (item.payload && item.payload.__forceSync) {
+            delete item.payload.__forceSync;
+            offlineQueue.update(id, { payload: item.payload });
+          }
           renderOfflineIndicator();
           renderOfflineBanner();
           renderOfflineQueue();
@@ -3826,32 +3979,56 @@ const server = http.createServer(async (req, res) => {
         try {
           if (item.type === "create_pigeon") {
             const inputData = item.payload || {};
-            const existing = db.pigeons.find(p => p.ringNo === inputData.ringNo);
+            const force = !!inputData.__forceSync;
+            const cleanInput = { ...inputData };
+            delete cleanInput.__forceSync;
+            const existing = force ? null : db.pigeons.find(p => p.ringNo === cleanInput.ringNo);
             if (existing) {
               result.status = "conflict";
               result.conflict = {
                 kind: "ring_exists",
                 message: "足环号已存在",
-                localPayload: inputData,
+                localPayload: cleanInput,
                 serverData: existing
               };
             } else {
-              const pigeon = { ...inputData, vaccines: [], transfers: [], races: [] };
-              db.pigeons.unshift(pigeon);
-              result.status = "success";
-              result.data = pigeon;
-              dbModified = true;
+              if (force) {
+                const idx = db.pigeons.findIndex(p => p.ringNo === cleanInput.ringNo);
+                if (idx >= 0) {
+                  const original = db.pigeons[idx];
+                  const merged = { ...original, ...cleanInput, vaccines: original.vaccines || [], transfers: original.transfers || [], races: original.races || [] };
+                  db.pigeons[idx] = merged;
+                  result.status = "success";
+                  result.data = merged;
+                  dbModified = true;
+                } else {
+                  const pigeon = { ...cleanInput, vaccines: [], transfers: [], races: [] };
+                  db.pigeons.unshift(pigeon);
+                  result.status = "success";
+                  result.data = pigeon;
+                  dbModified = true;
+                }
+              } else {
+                const pigeon = { ...cleanInput, vaccines: [], transfers: [], races: [] };
+                db.pigeons.unshift(pigeon);
+                result.status = "success";
+                result.data = pigeon;
+                dbModified = true;
+              }
             }
           } else if (item.type === "create_transfer") {
             const ringNo = item.ringNo;
             const inputData = item.payload || {};
+            const force = !!inputData.__forceSync;
+            const cleanInput = { ...inputData };
+            delete cleanInput.__forceSync;
             const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
             if (!pigeon) {
               result.status = "conflict";
               result.conflict = { kind: "pigeon_not_found", message: "鸽只档案不存在，可能已被删除" };
             } else {
               const today = localDateString();
-              const to = (inputData.to || "").trim();
+              const to = (cleanInput.to || "").trim();
               if (!to) {
                 result.status = "error";
                 result.error = "新归属人不能为空";
@@ -3863,7 +4040,7 @@ const server = http.createServer(async (req, res) => {
                   serverData: { owner: pigeon.owner }
                 };
               } else {
-                const hasPending = pigeon.transfers.some(t => t.status === "pending");
+                const hasPending = force ? false : pigeon.transfers.some(t => t.status === "pending");
                 if (hasPending) {
                   result.status = "conflict";
                   result.conflict = {
@@ -3872,7 +4049,7 @@ const server = http.createServer(async (req, res) => {
                     serverData: pigeon.transfers.filter(t => t.status === "pending")
                   };
                 } else {
-                  const transfer = { id: Date.now().toString() + Math.random().toString(36).slice(2, 6), date: inputData.date || today, from: pigeon.owner, to, status: "pending", createdAt: today, confirmedAt: null, cancelledAt: null };
+                  const transfer = { id: Date.now().toString() + Math.random().toString(36).slice(2, 6), date: cleanInput.date || today, from: pigeon.owner, to, status: "pending", createdAt: today, confirmedAt: null, cancelledAt: null };
                   pigeon.transfers.push(transfer);
                   result.status = "success";
                   result.data = pigeon;
@@ -3883,30 +4060,62 @@ const server = http.createServer(async (req, res) => {
           } else if (item.type === "create_race") {
             const ringNo = item.ringNo;
             const inputData = item.payload || {};
+            const force = !!inputData.__forceSync;
             const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
             if (!pigeon) {
               result.status = "conflict";
               result.conflict = { kind: "pigeon_not_found", message: "鸽只档案不存在，可能已被删除" };
             } else {
-              const race = { date: inputData.date || new Date().toISOString().slice(0, 10), event: inputData.event, distance: Number(inputData.distance || 0), returnTime: inputData.returnTime || "", rank: Number(inputData.rank || 0) };
-              pigeon.races.push(race);
-              result.status = "success";
-              result.data = pigeon;
-              dbModified = true;
+              const raceDate = inputData.date || new Date().toISOString().slice(0, 10);
+              const raceEvent = inputData.event || "";
+              const duplicate = force ? null : pigeon.races.find(r => r.date === raceDate && (r.event || "") === raceEvent);
+              if (duplicate) {
+                result.status = "conflict";
+                result.conflict = {
+                  kind: "race_duplicate",
+                  message: "同一赛事日期已有成绩记录",
+                  localPayload: inputData,
+                  serverData: duplicate
+                };
+              } else {
+                const cleanInput = { ...inputData };
+                delete cleanInput.__forceSync;
+                const race = { date: raceDate, event: raceEvent, distance: Number(cleanInput.distance || 0), returnTime: cleanInput.returnTime || "", rank: Number(cleanInput.rank || 0) };
+                pigeon.races.push(race);
+                result.status = "success";
+                result.data = pigeon;
+                dbModified = true;
+              }
             }
           } else if (item.type === "create_vaccine") {
             const ringNo = item.ringNo;
             const inputData = item.payload || {};
+            const force = !!inputData.__forceSync;
             const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
             if (!pigeon) {
               result.status = "conflict";
               result.conflict = { kind: "pigeon_not_found", message: "鸽只档案不存在，可能已被删除" };
             } else {
-              const vaccine = { date: inputData.date || new Date().toISOString().slice(0, 10), name: inputData.name, remark: inputData.remark || "" };
-              pigeon.vaccines.push(vaccine);
-              result.status = "success";
-              result.data = pigeon;
-              dbModified = true;
+              const vacDate = inputData.date || new Date().toISOString().slice(0, 10);
+              const vacName = inputData.name || "";
+              const duplicate = force ? null : pigeon.vaccines.find(v => v.date === vacDate && (v.name || "") === vacName);
+              if (duplicate) {
+                result.status = "conflict";
+                result.conflict = {
+                  kind: "vaccine_duplicate",
+                  message: "同日同名称疫苗已接种",
+                  localPayload: inputData,
+                  serverData: duplicate
+                };
+              } else {
+                const cleanInput = { ...inputData };
+                delete cleanInput.__forceSync;
+                const vaccine = { date: vacDate, name: vacName, remark: cleanInput.remark || "" };
+                pigeon.vaccines.push(vaccine);
+                result.status = "success";
+                result.data = pigeon;
+                dbModified = true;
+              }
             }
           } else {
             result.status = "error";
