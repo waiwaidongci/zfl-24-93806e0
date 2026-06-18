@@ -1159,7 +1159,7 @@ const page = `<!doctype html>
       <div class="panel" id="detail"></div>
       <div class="filter-bar">
         <h3>档案筛选</h3>
-        <div class="filter-grid">
+        <div class="filter-grid" style="grid-template-columns:repeat(6,1fr);">
           <div class="filter-item">
             <label>鸽舍</label>
             <select id="filterLoft"><option value="">全部鸽舍</option></select>
@@ -1171,6 +1171,14 @@ const page = `<!doctype html>
           <div class="filter-item">
             <label>羽色</label>
             <select id="filterColor"><option value="">全部羽色</option></select>
+          </div>
+          <div class="filter-item">
+            <label>有无父母档案</label>
+            <select id="filterParents"><option value="">全部</option></select>
+          </div>
+          <div class="filter-item">
+            <label>是否有未确认转让</label>
+            <select id="filterPendingTransfer"><option value="">全部</option></select>
           </div>
           <div class="filter-item">
             <div class="filter-actions">
@@ -1490,10 +1498,12 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     const filterLoft = document.querySelector("#filterLoft");
     const filterOwner = document.querySelector("#filterOwner");
     const filterColor = document.querySelector("#filterColor");
+    const filterParents = document.querySelector("#filterParents");
+    const filterPendingTransfer = document.querySelector("#filterPendingTransfer");
     const filterSummary = document.querySelector("#filterSummary");
     let pigeons = [];
     let currentRingNo = null;
-    let filters = { loft: "", owner: "", color: "" };
+    let filters = { loft: "", owner: "", color: "", parents: "", pendingTransfer: "" };
     const OFFLINE_QUEUE_KEY = "zfl_offline_queue_v1";
     const OFFLINE_SUPPORTED_PATHS = [
       { pattern: "^/api/pigeons$", method: "POST", type: "create_pigeon", extractRingNo: function(payload){ return payload && payload.ringNo; } },
@@ -2185,15 +2195,57 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       const currentLoft = filterLoft.value;
       const currentOwner = filterOwner.value;
       const currentColor = filterColor.value;
-      filterLoft.innerHTML = '<option value="">全部鸽舍</option>' + lofts.map(v => '<option value="'+v+'"'+(v===currentLoft?' selected':'')+'>'+v+'</option>').join("");
-      filterOwner.innerHTML = '<option value="">全部鸽主</option>' + owners.map(v => '<option value="'+v+'"'+(v===currentOwner?' selected':'')+'>'+v+'</option>').join("");
-      filterColor.innerHTML = '<option value="">全部羽色</option>' + colors.map(v => '<option value="'+v+'"'+(v===currentColor?' selected':'')+'>'+v+'</option>').join("");
+      const currentParents = filterParents.value;
+      const currentPendingTransfer = filterPendingTransfer.value;
+
+      const existingRings = new Set(pigeons.map(p => p.ringNo));
+      const withParents = pigeons.filter(p =>
+        (p.fatherRing && p.fatherRing.trim() && existingRings.has(p.fatherRing.trim())) ||
+        (p.motherRing && p.motherRing.trim() && existingRings.has(p.motherRing.trim()))
+      ).length;
+      const withoutParents = pigeons.length - withParents;
+      const withPendingTransfer = pigeons.filter(p =>
+        p.transfers && p.transfers.some(t => t.status === "pending")
+      ).length;
+      const withoutPendingTransfer = pigeons.length - withPendingTransfer;
+
+      filterLoft.innerHTML = '<option value="">全部鸽舍（' + pigeons.length + '）</option>' + lofts.map(v => {
+        const count = pigeons.filter(p => p.loft === v).length;
+        return '<option value="'+v+'"'+(v===currentLoft?' selected':'')+'>'+v+'（' + count + '）</option>';
+      }).join("");
+      filterOwner.innerHTML = '<option value="">全部鸽主（' + pigeons.length + '）</option>' + owners.map(v => {
+        const count = pigeons.filter(p => p.owner === v).length;
+        return '<option value="'+v+'"'+(v===currentOwner?' selected':'')+'>'+v+'（' + count + '）</option>';
+      }).join("");
+      filterColor.innerHTML = '<option value="">全部羽色（' + pigeons.length + '）</option>' + colors.map(v => {
+        const count = pigeons.filter(p => p.color === v).length;
+        return '<option value="'+v+'"'+(v===currentColor?' selected':'')+'>'+v+'（' + count + '）</option>';
+      }).join("");
+      filterParents.innerHTML = '<option value="">全部（' + pigeons.length + '）</option>' +
+        '<option value="has"'+(currentParents==='has'?' selected':'')+'>有父母档案（' + withParents + '）</option>' +
+        '<option value="none"'+(currentParents==='none'?' selected':'')+'>无父母档案（' + withoutParents + '）</option>';
+      filterPendingTransfer.innerHTML = '<option value="">全部（' + pigeons.length + '）</option>' +
+        '<option value="has"'+(currentPendingTransfer==='has'?' selected':'')+'>有未确认转让（' + withPendingTransfer + '）</option>' +
+        '<option value="none"'+(currentPendingTransfer==='none'?' selected':'')+'>无未确认转让（' + withoutPendingTransfer + '）</option>';
     }
     function applyFilters() {
+      const existingRings = new Set(pigeons.map(p => p.ringNo));
       return pigeons.filter(p => {
         if (filters.loft && p.loft !== filters.loft) return false;
         if (filters.owner && p.owner !== filters.owner) return false;
         if (filters.color && p.color !== filters.color) return false;
+        if (filters.parents) {
+          const hasFather = p.fatherRing && p.fatherRing.trim() && existingRings.has(p.fatherRing.trim());
+          const hasMother = p.motherRing && p.motherRing.trim() && existingRings.has(p.motherRing.trim());
+          const hasParents = hasFather || hasMother;
+          if (filters.parents === "has" && !hasParents) return false;
+          if (filters.parents === "none" && hasParents) return false;
+        }
+        if (filters.pendingTransfer) {
+          const hasPending = p.transfers && p.transfers.some(t => t.status === "pending");
+          if (filters.pendingTransfer === "has" && !hasPending) return false;
+          if (filters.pendingTransfer === "none" && hasPending) return false;
+        }
         return true;
       });
     }
@@ -2202,11 +2254,13 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       if (filters.loft) parts.push("鸽舍：" + filters.loft);
       if (filters.owner) parts.push("鸽主：" + filters.owner);
       if (filters.color) parts.push("羽色：" + filters.color);
+      if (filters.parents) parts.push("父母档案：" + (filters.parents === "has" ? "有" : "无"));
+      if (filters.pendingTransfer) parts.push("未确认转让：" + (filters.pendingTransfer === "has" ? "有" : "无"));
       const total = pigeons.length;
       if (parts.length === 0) {
         filterSummary.textContent = "共 " + total + " 只档案（未筛选）";
       } else {
-        filterSummary.textContent = "筛选条件：" + parts.join(" | ") + "，共显示 " + filtered.length + " / " + total + " 只";
+        filterSummary.textContent = "筛选条件：" + parts.join(" | ") + "，命中 " + filtered.length + " / " + total + " 只";
       }
     }
     let cachedAuditResult = null;
@@ -2507,11 +2561,15 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     filterLoft.onchange = () => { filters.loft = filterLoft.value; renderCards(); };
     filterOwner.onchange = () => { filters.owner = filterOwner.value; renderCards(); };
     filterColor.onchange = () => { filters.color = filterColor.value; renderCards(); };
+    filterParents.onchange = () => { filters.parents = filterParents.value; renderCards(); };
+    filterPendingTransfer.onchange = () => { filters.pendingTransfer = filterPendingTransfer.value; renderCards(); };
     document.querySelector("#resetFilter").onclick = () => {
-      filters = { loft: "", owner: "", color: "" };
+      filters = { loft: "", owner: "", color: "", parents: "", pendingTransfer: "" };
       filterLoft.value = "";
       filterOwner.value = "";
       filterColor.value = "";
+      filterParents.value = "";
+      filterPendingTransfer.value = "";
       renderCards();
     };
     form.onsubmit = async event => {
