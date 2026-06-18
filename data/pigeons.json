@@ -1,46 +1,6 @@
 {
   "pigeons": [
     {
-      "ringNo": "TEST-C-002",
-      "owner": "测试棚",
-      "color": "深灰",
-      "loft": "A棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": [],
-      "fatherRing": "TEST-F-001",
-      "motherRing": "TEST-M-001"
-    },
-    {
-      "ringNo": "TEST-C-001",
-      "owner": "测试棚",
-      "fatherRing": "TEST-F-001",
-      "motherRing": "TEST-M-001",
-      "color": "灰雨点",
-      "loft": "A棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
-      "ringNo": "TEST-M-001",
-      "owner": "测试棚",
-      "color": "灰",
-      "loft": "A棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
-      "ringNo": "TEST-F-001",
-      "owner": "测试棚",
-      "color": "雨点",
-      "loft": "A棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
       "ringNo": "CHN-2026-001",
       "owner": "北岸棚",
       "fatherRing": "CHN-2022-188",
@@ -52,11 +12,6 @@
           "date": "2026-04-01",
           "name": "新城疫",
           "remark": "首次免疫"
-        },
-        {
-          "date": "2026-06-10",
-          "name": "禽流感",
-          "remark": "测试新增"
         }
       ],
       "transfers": [
@@ -65,7 +20,7 @@
           "from": "育种棚",
           "to": "北岸棚",
           "status": "confirmed",
-          "id": "17818017286401wrj",
+          "id": "init-trans-001",
           "createdAt": "2026-04-15",
           "confirmedAt": "2026-04-15",
           "cancelledAt": null
@@ -88,7 +43,13 @@
       "motherRing": "",
       "color": "雨点",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-05-15",
+          "name": "鸽痘",
+          "remark": "春季接种"
+        }
+      ],
       "transfers": [],
       "races": []
     },
@@ -99,50 +60,41 @@
       "motherRing": "",
       "color": "红轮",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-03-20",
+          "name": "新城疫",
+          "remark": "基础免疫"
+        }
+      ],
       "transfers": [],
       "races": []
     }
   ],
-  "breedingPlans": [
+  "breedingPlans": [],
+  "raceEvents": [
     {
-      "id": "1781801728662",
-      "fatherRing": "TEST-F-001",
-      "motherRing": "TEST-M-001",
-      "planDate": "2026-06-01",
-      "remark": "测试配对",
-      "status": "cancelled",
-      "statusHistory": [
+      "id": "1781798833195",
+      "name": "统计测试赛事",
+      "date": "2026-06-18",
+      "distance": 200,
+      "results": [
         {
-          "status": "planned",
-          "at": "2026-06-18"
+          "ringNo": "CHN-2026-001",
+          "returnTime": "09:50",
+          "rank": 0
         },
         {
-          "status": "paired",
-          "at": "2026-06-18",
-          "remark": "配对成功"
+          "ringNo": "CHN-2022-188",
+          "returnTime": "10:00",
+          "rank": 0
         },
         {
-          "status": "hatched",
-          "at": "2026-06-18",
-          "remark": "孵出2只"
-        },
-        {
-          "status": "cancelled",
-          "at": "2026-06-18",
-          "remark": ""
+          "ringNo": "CHN-2023-512",
+          "returnTime": "09:40",
+          "rank": 3
         }
-      ],
-      "offspring": [
-        "TEST-C-001",
-        "TEST-C-002"
-      ],
-      "pairedAt": "2026-06-02",
-      "hatchedAt": "2026-06-10",
-      "cancelledAt": "2026-06-15",
-      "cancelReason": "测试取消",
-      "createdAt": "2026-06-18"
+      ]
     }
-  ],
-  "raceEvents": []
+  ]
 }
