@@ -239,6 +239,240 @@ function validateBreedingPlan(db, fatherRing, motherRing) {
   }
   return errors;
 }
+function performPedigreeAudit(db) {
+  const issues = [];
+  const allRingNos = new Set(db.pigeons.map(p => p.ringNo));
+  const ringCountMap = new Map();
+
+  db.pigeons.forEach(p => {
+    const count = (ringCountMap.get(p.ringNo) || 0) + 1;
+    ringCountMap.set(p.ringNo, count);
+  });
+
+  for (const [ringNo, count] of ringCountMap.entries()) {
+    if (count > 1) {
+      issues.push({
+        id: `dup_${ringNo}`,
+        type: "duplicate_ring",
+        severity: "error",
+        ringNo: ringNo,
+        message: `足环号重复，出现 ${count} 次`,
+        details: `足环号 ${ringNo} 在档案中重复出现 ${count} 次，请删除重复记录。`,
+        relatedRingNos: []
+      });
+    }
+  }
+
+  db.pigeons.forEach(p => {
+    if (p.fatherRing && p.fatherRing.trim() && !allRingNos.has(p.fatherRing.trim())) {
+      issues.push({
+        id: `missing_father_${p.ringNo}`,
+        type: "missing_parent",
+        severity: "error",
+        ringNo: p.ringNo,
+        message: `父鸽档案缺失：${p.fatherRing}`,
+        details: `鸽只 ${p.ringNo} 的父鸽足环号 ${p.fatherRing} 在档案中不存在，请先创建父鸽档案或修正足环号。`,
+        relatedRingNos: [p.fatherRing]
+      });
+    }
+    if (p.motherRing && p.motherRing.trim() && !allRingNos.has(p.motherRing.trim())) {
+      issues.push({
+        id: `missing_mother_${p.ringNo}`,
+        type: "missing_parent",
+        severity: "error",
+        ringNo: p.ringNo,
+        message: `母鸽档案缺失：${p.motherRing}`,
+        details: `鸽只 ${p.ringNo} 的母鸽足环号 ${p.motherRing} 在档案中不存在，请先创建母鸽档案或修正足环号。`,
+        relatedRingNos: [p.motherRing]
+      });
+    }
+
+    if (p.fatherRing && p.motherRing && p.fatherRing === p.motherRing) {
+      issues.push({
+        id: `same_parent_${p.ringNo}`,
+        type: "circular_parent",
+        severity: "error",
+        ringNo: p.ringNo,
+        message: `父母鸽为同一只：${p.fatherRing}`,
+        details: `鸽只 ${p.ringNo} 的父鸽和母鸽足环号相同（${p.fatherRing}），这是不可能的血统关系。`,
+        relatedRingNos: [p.fatherRing]
+      });
+    }
+
+    if (p.fatherRing === p.ringNo || p.motherRing === p.ringNo) {
+      issues.push({
+        id: `self_parent_${p.ringNo}`,
+        type: "circular_parent",
+        severity: "error",
+        ringNo: p.ringNo,
+        message: `不能以自己为父/母鸽`,
+        details: `鸽只 ${p.ringNo} 的父鸽或母鸽足环号指向自身，这是不可能的血统关系。`,
+        relatedRingNos: []
+      });
+    }
+  });
+
+  db.pigeons.forEach(p => {
+    if (p.fatherRing && p.fatherRing.trim()) {
+      const father = db.pigeons.find(fp => fp.ringNo === p.fatherRing.trim());
+      if (father) {
+        if (father.fatherRing === p.ringNo || father.motherRing === p.ringNo) {
+          issues.push({
+            id: `circular_2gen_${p.ringNo}_${p.fatherRing}`,
+            type: "circular_parent",
+            severity: "error",
+            ringNo: p.ringNo,
+            message: `两代循环血统：${p.ringNo} ↔ ${p.fatherRing}`,
+            details: `鸽只 ${p.ringNo} 的父鸽是 ${p.fatherRing}，而 ${p.fatherRing} 的父/母鸽又是 ${p.ringNo}，形成循环血统。`,
+            relatedRingNos: [p.fatherRing]
+          });
+        }
+      }
+    }
+    if (p.motherRing && p.motherRing.trim()) {
+      const mother = db.pigeons.find(mp => mp.ringNo === p.motherRing.trim());
+      if (mother) {
+        if (mother.fatherRing === p.ringNo || mother.motherRing === p.ringNo) {
+          issues.push({
+            id: `circular_2gen_${p.ringNo}_${p.motherRing}`,
+            type: "circular_parent",
+            severity: "error",
+            ringNo: p.ringNo,
+            message: `两代循环血统：${p.ringNo} ↔ ${p.motherRing}`,
+            details: `鸽只 ${p.ringNo} 的母鸽是 ${p.motherRing}，而 ${p.motherRing} 的父/母鸽又是 ${p.ringNo}，形成循环血统。`,
+            relatedRingNos: [p.motherRing]
+          });
+        }
+      }
+    }
+  });
+
+  db.pigeons.forEach(p => {
+    if (!p.transfers || p.transfers.length === 0) return;
+    if (!p.races || p.races.length === 0) return;
+
+    const confirmedTransfers = p.transfers
+      .filter(t => t.status === "confirmed")
+      .sort((a, b) => (a.confirmedAt || a.date).localeCompare(b.confirmedAt || b.date));
+
+    if (confirmedTransfers.length === 0) return;
+
+    const ownerHistory = [];
+    let currentOwner = p.transfers[0]?.from || p.owner;
+    let currentStartDate = "0000-00-00";
+
+    confirmedTransfers.forEach(t => {
+      ownerHistory.push({
+        owner: currentOwner,
+        startDate: currentStartDate,
+        endDate: t.confirmedAt || t.date
+      });
+      currentOwner = t.to;
+      currentStartDate = t.confirmedAt || t.date;
+    });
+    ownerHistory.push({
+      owner: currentOwner,
+      startDate: currentStartDate,
+      endDate: "9999-12-31"
+    });
+
+    p.races.forEach((race, idx) => {
+      if (!race.date) return;
+      const matchingOwner = ownerHistory.find(h => 
+        race.date >= h.startDate && race.date <= h.endDate
+      );
+      if (matchingOwner && matchingOwner.owner !== p.owner) {
+        issues.push({
+          id: `ownership_race_${p.ringNo}_${idx}`,
+          type: "unclear_race_ownership",
+          severity: "warning",
+          ringNo: p.ringNo,
+          message: `成绩归属不清：${race.date} ${race.event}`,
+          details: `鸽只 ${p.ringNo} 在 ${race.date} 的比赛 "${race.event}" 成绩记录时，实际归属应为 ${matchingOwner.owner}，但当前鸽主为 ${p.owner}。请检查成绩是否属于正确的鸽主。`,
+          relatedRingNos: [],
+          extra: { raceDate: race.date, raceEvent: race.event, expectedOwner: matchingOwner.owner, currentOwner: p.owner }
+        });
+      }
+    });
+  });
+
+  db.pigeons.forEach(p => {
+    if (!p.races || p.races.length === 0) return;
+    p.races.forEach((race, idx) => {
+      const fieldErrors = [];
+      if (!race.date || race.date.trim() === "") {
+        fieldErrors.push("比赛日期缺失");
+      }
+      if (!race.event || race.event.trim() === "") {
+        fieldErrors.push("赛事名称缺失");
+      }
+      if (race.distance === undefined || race.distance === null || isNaN(Number(race.distance)) || Number(race.distance) < 0) {
+        fieldErrors.push("距离字段异常");
+      }
+      if (race.rank !== undefined && race.rank !== null && !isNaN(Number(race.rank)) && Number(race.rank) < 0) {
+        fieldErrors.push("名次不能为负数");
+      }
+      if (fieldErrors.length > 0) {
+        issues.push({
+          id: `abnormal_race_${p.ringNo}_${idx}`,
+          type: "abnormal_race_field",
+          severity: "warning",
+          ringNo: p.ringNo,
+          message: `成绩字段异常：${race.event || "未知赛事"}`,
+          details: `鸽只 ${p.ringNo} 的第 ${idx + 1} 条成绩记录存在以下问题：${fieldErrors.join("、")}。`,
+          relatedRingNos: [],
+          extra: { raceIndex: idx, raceDate: race.date, raceEvent: race.event, fields: fieldErrors }
+        });
+      }
+    });
+  });
+
+  if (db.raceEvents) {
+    db.raceEvents.forEach(event => {
+      if (!event.results || event.results.length === 0) return;
+      event.results.forEach((result, idx) => {
+        const pigeon = db.pigeons.find(p => p.ringNo === result.ringNo);
+        if (!pigeon) {
+          issues.push({
+            id: `event_race_missing_${event.id}_${idx}`,
+            type: "abnormal_race_field",
+            severity: "warning",
+            ringNo: result.ringNo,
+            message: `赛事成绩无对应档案：${result.ringNo}`,
+            details: `赛事 "${event.name}"（${event.date}）中的成绩记录 ${result.ringNo} 没有对应的鸽只档案。`,
+            relatedRingNos: [],
+            extra: { eventId: event.id, eventName: event.name, eventDate: event.date, resultIndex: idx }
+          });
+        }
+      });
+    });
+  }
+
+  const grouped = {
+    errors: issues.filter(i => i.severity === "error"),
+    warnings: issues.filter(i => i.severity === "warning"),
+    all: issues
+  };
+
+  return {
+    summary: {
+      total: issues.length,
+      errors: grouped.errors.length,
+      warnings: grouped.warnings.length,
+      byType: {
+        missing_parent: grouped.all.filter(i => i.type === "missing_parent").length,
+        circular_parent: grouped.all.filter(i => i.type === "circular_parent").length,
+        duplicate_ring: grouped.all.filter(i => i.type === "duplicate_ring").length,
+        unclear_race_ownership: grouped.all.filter(i => i.type === "unclear_race_ownership").length,
+        abnormal_race_field: grouped.all.filter(i => i.type === "abnormal_race_field").length
+      },
+      totalPigeons: db.pigeons.length
+    },
+    grouped,
+    issues
+  };
+}
+
 function validateBackupData(data) {
   const details = [];
   if (!data || typeof data !== "object") {
@@ -645,7 +879,7 @@ const page = `<!doctype html>
   </style>
 </head>
 <body>
-  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
+  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="auditBtn" class="secondary">血统一致性审查</button><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
   <main>
     <form id="form">
       <h2>创建鸽只档案</h2>
@@ -943,6 +1177,19 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
             </div>
           </div>
           <div id="restorePreviewArea" style="margin-top:18px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="auditModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal" style="max-width:1100px;">
+        <div class="modal-header">
+          <h2>血统一致性审查</h2>
+          <button id="closeAudit" class="secondary">关闭</button>
+        </div>
+        <div id="auditContent">
+          <div class="empty-state">点击"开始审查"按钮扫描全部鸽只档案</div>
         </div>
       </div>
     </div>
@@ -2030,6 +2277,165 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         load();
       };
     }
+    const auditModal = document.querySelector("#auditModal");
+    const auditContent = document.querySelector("#auditContent");
+    let currentAuditResult = null;
+    let auditFilter = { severity: "all", type: "all" };
+    const typeLabels = {
+      missing_parent: "缺失父母档案",
+      circular_parent: "互为父母/循环血统",
+      duplicate_ring: "重复足环号",
+      unclear_race_ownership: "转让后成绩归属不清",
+      abnormal_race_field: "成绩字段异常"
+    };
+    const typeIcons = {
+      missing_parent: "👤",
+      circular_parent: "↻",
+      duplicate_ring: "⚠",
+      unclear_race_ownership: "🏷",
+      abnormal_race_field: "📝"
+    };
+    document.querySelector("#auditBtn").onclick = () => {
+      auditModal.style.display = "block";
+      currentAuditResult = null;
+      auditFilter = { severity: "all", type: "all" };
+      renderAuditEmpty();
+    };
+    document.querySelector("#closeAudit").onclick = () => {
+      auditModal.style.display = "none";
+    };
+    function renderAuditEmpty() {
+      auditContent.innerHTML = '<div class="empty-state" style="padding:40px;"><button id="startAuditBtn" style="font-size:16px;padding:14px 28px;">开始审查</button><p class="hint" style="margin-top:12px;">扫描全部鸽只档案中的父母关系、子代关系、转让链和成绩记录</p></div>';
+      document.querySelector("#startAuditBtn").onclick = runAudit;
+    }
+    async function runAudit() {
+      try {
+        auditContent.innerHTML = '<div class="empty-state" style="padding:40px;"><div style="font-size:18px;">正在审查中...</div><p class="hint" style="margin-top:8px;">正在扫描全部档案，请稍候</p></div>';
+        const result = await api("/api/audit/pedigree");
+        currentAuditResult = result;
+        renderAuditResult(result);
+      } catch(e) {
+        auditContent.innerHTML = '<div class="empty-state" style="padding:40px;color:var(--red);"><div>审查失败：' + e.message + '</div><button id="retryAuditBtn" class="secondary" style="margin-top:12px;">重试</button></div>';
+        document.querySelector("#retryAuditBtn").onclick = runAudit;
+      }
+    }
+    function getFilteredIssues(result) {
+      let issues = result.issues;
+      if (auditFilter.severity !== "all") {
+        issues = issues.filter(i => i.severity === auditFilter.severity);
+      }
+      if (auditFilter.type !== "all") {
+        issues = issues.filter(i => i.type === auditFilter.type);
+      }
+      return issues;
+    }
+    function renderAuditResult(result) {
+      const s = result.summary;
+      const filteredIssues = getFilteredIssues(result);
+      const typeOptions = Object.entries(typeLabels).map(([key, label]) => 
+        '<option value="' + key + '"' + (auditFilter.type === key ? ' selected' : '') + '>' + label + '（' + s.byType[key] + '）</option>'
+      ).join("");
+      const statsHtml = '<div class="import-stats">' +
+        '<div class="stat"><div class="num">' + s.totalPigeons + '</div><div class="lbl">审查鸽只</div></div>' +
+        '<div class="stat bad"><div class="num">' + s.errors + '</div><div class="lbl">严重问题</div></div>' +
+        '<div class="stat warn"><div class="num">' + s.warnings + '</div><div class="lbl">警告</div></div>' +
+        '<div class="stat"><div class="num">' + s.total + '</div><div class="lbl">总问题数</div></div>' +
+        '</div>';
+      const filterHtml = '<div class="filter-bar" style="margin-top:16px;">' +
+        '<h3>问题筛选</h3>' +
+        '<div class="filter-grid">' +
+        '<div class="filter-item">' +
+        '<label>严重程度</label>' +
+        '<select id="auditFilterSeverity">' +
+        '<option value="all"' + (auditFilter.severity === 'all' ? ' selected' : '') + '>全部（' + s.total + '）</option>' +
+        '<option value="error"' + (auditFilter.severity === 'error' ? ' selected' : '') + '>严重（' + s.errors + '）</option>' +
+        '<option value="warning"' + (auditFilter.severity === 'warning' ? ' selected' : '') + '>警告（' + s.warnings + '）</option>' +
+        '</select>' +
+        '</div>' +
+        '<div class="filter-item">' +
+        '<label>问题类型</label>' +
+        '<select id="auditFilterType">' +
+        '<option value="all"' + (auditFilter.type === 'all' ? ' selected' : '') + '>全部类型</option>' +
+        typeOptions +
+        '</select>' +
+        '</div>' +
+        '<div class="filter-item">' +
+        '<div class="filter-actions">' +
+        '<button id="refreshAuditBtn" class="secondary">重新审查</button>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '<div class="filter-summary">筛选后显示 ' + filteredIssues.length + ' / ' + s.total + ' 个问题</div>' +
+        '</div>';
+      let issuesHtml = "";
+      if (filteredIssues.length === 0) {
+        if (s.total === 0) {
+          issuesHtml = '<div class="result-summary" style="margin-top:16px;"><h3 style="color:var(--green);">✓ 太棒了！</h3><p class="hint">所有 ' + s.totalPigeons + ' 只鸽只档案未发现血统一致性问题。</p></div>';
+        } else {
+          issuesHtml = '<div class="result-summary" style="margin-top:16px;"><h3>无匹配结果</h3><p class="hint">当前筛选条件下没有问题，尝试调整筛选条件。</p></div>';
+        }
+      } else {
+        const bySeverity = {
+          error: filteredIssues.filter(i => i.severity === "error"),
+          warning: filteredIssues.filter(i => i.severity === "warning")
+        };
+        const errorSection = bySeverity.error.length > 0 ? renderIssueSection("严重问题", "error", bySeverity.error) : "";
+        const warningSection = bySeverity.warning.length > 0 ? renderIssueSection("警告", "warning", bySeverity.warning) : "";
+        issuesHtml = '<div style="margin-top:16px;">' + errorSection + warningSection + '</div>';
+      }
+      auditContent.innerHTML = statsHtml + filterHtml + issuesHtml;
+      document.querySelector("#auditFilterSeverity").onchange = (e) => {
+        auditFilter.severity = e.target.value;
+        renderAuditResult(result);
+      };
+      document.querySelector("#auditFilterType").onchange = (e) => {
+        auditFilter.type = e.target.value;
+        renderAuditResult(result);
+      };
+      document.querySelector("#refreshAuditBtn").onclick = runAudit;
+      document.querySelectorAll("[data-audit-jump]").forEach(btn => {
+        btn.onclick = (e) => {
+          const ringNo = btn.dataset.auditJump;
+          currentRingNo = ringNo;
+          auditModal.style.display = "none";
+          search.value = ringNo;
+          load();
+        };
+      });
+    }
+    function renderIssueSection(title, severity, issues) {
+      const color = severity === "error" ? "var(--red)" : "var(--yellow)";
+      const bgColor = severity === "error" ? "#fff5f5" : "#fffbf0";
+      const borderColor = severity === "error" ? "#f5c2be" : "#e6d391";
+      const icon = severity === "error" ? "✗" : "⚠";
+      const issuesHtml = issues.map(issue => {
+        const typeLabel = typeLabels[issue.type] || issue.type;
+        const typeIcon = typeIcons[issue.type] || "";
+        let extraHtml = "";
+        if (issue.extra) {
+          if (issue.type === "unclear_race_ownership") {
+            extraHtml = '<div class="meta" style="margin-top:6px;">比赛日期：' + issue.extra.raceDate + ' · 赛事：' + issue.extra.raceEvent + '<br>当时归属：' + issue.extra.expectedOwner + ' · 当前鸽主：' + issue.extra.currentOwner + '</div>';
+          } else if (issue.type === "abnormal_race_field" && issue.extra.fields) {
+            extraHtml = '<div class="meta" style="margin-top:6px;">异常字段：' + issue.extra.fields.join("、") + '</div>';
+          }
+        }
+        return '<div class="plan-item" style="border-left:4px solid ' + color + ';">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">' +
+          '<div style="flex:1;">' +
+          '<div style="font-weight:700;">' + typeIcon + ' ' + typeLabel + '</div>' +
+          '<div style="margin-top:4px;">' + issue.message + '</div>' +
+          '<div class="meta" style="margin-top:6px;">' + issue.details + '</div>' +
+          extraHtml +
+          '</div>' +
+          '<button class="btn-small secondary" data-audit-jump="' + issue.ringNo + '">查看 ' + issue.ringNo + '</button>' +
+          '</div>' +
+          '</div>';
+      }).join("");
+      return '<div class="panel" style="margin-bottom:16px;">' +
+        '<h3 style="color:' + color + ';margin-bottom:12px;">' + icon + ' ' + title + '（' + issues.length + '）</h3>' +
+        '<div class="plan-list">' + issuesHtml + '</div>' +
+        '</div>';
+    }
     load();
   </script>
 </body>
@@ -2373,6 +2779,10 @@ const server = http.createServer(async (req, res) => {
       if (result.success) {
         await saveDb(db);
       }
+      return sendJson(res, 200, result);
+    }
+    if (req.method === "GET" && url.pathname === "/api/audit/pedigree") {
+      const result = performPedigreeAudit(db);
       return sendJson(res, 200, result);
     }
     sendJson(res, 404, { error: "not_found" });
