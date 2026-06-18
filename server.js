@@ -336,6 +336,33 @@ function validateBackupData(data) {
   }
   return { valid: true, message: "数据结构验证通过", details: [] };
 }
+function summarizeRaces(races) {
+  if (!Array.isArray(races) || races.length === 0) return { count: 0, summary: "无" };
+  const bestRank = races.reduce((best, r) => {
+    if (r.rank && typeof r.rank === "number" && (best === null || r.rank < best)) return r.rank;
+    return best;
+  }, null);
+  const total = races.length;
+  return {
+    count: total,
+    summary: total + " 场赛事" + (bestRank ? "，最佳名次：第" + bestRank + "名" : "")
+  };
+}
+function summarizeVaccines(vaccines) {
+  if (!Array.isArray(vaccines) || vaccines.length === 0) return { count: 0, summary: "无" };
+  const names = vaccines.map(v => v.name || "未知").filter(Boolean);
+  return {
+    count: vaccines.length,
+    summary: vaccines.length + " 条" + (names.length > 0 ? "（" + names.slice(0, 3).join("、") + (names.length > 3 ? "..." : "") + "）" : "")
+  };
+}
+function summarizeTransfers(transfers) {
+  if (!Array.isArray(transfers) || transfers.length === 0) return { count: 0, summary: "无" };
+  return {
+    count: transfers.length,
+    summary: transfers.length + " 次转让，最近：" + (transfers[transfers.length - 1].to || transfers[transfers.length - 1].newOwner || "未知")
+  };
+}
 function analyzeBackupData(currentDb, backupData) {
   const result = {
     summary: {
@@ -354,6 +381,13 @@ function analyzeBackupData(currentDb, backupData) {
   const backupRingMap = new Map();
   const pigeonRequired = ["ringNo", "owner", "color", "loft"];
   const pigeonFieldLabels = { ringNo: "足环号", owner: "鸽主", color: "羽色", loft: "棚号" };
+  const diffFields = [
+    { key: "owner", label: "鸽主" },
+    { key: "fatherRing", label: "父鸽环号" },
+    { key: "motherRing", label: "母鸽环号" },
+    { key: "color", label: "羽色" },
+    { key: "loft", label: "棚号" }
+  ];
   backupData.pigeons.forEach((p, idx) => {
     if (!p || typeof p !== "object") return;
     if (p.ringNo) {
@@ -368,19 +402,70 @@ function analyzeBackupData(currentDb, backupData) {
       }
       if (currentRings.has(p.ringNo)) {
         const currentPigeon = currentDb.pigeons.find(cp => cp.ringNo === p.ringNo);
+        const fieldDiffs = [];
+        diffFields.forEach(f => {
+          const currentVal = currentPigeon[f.key] || "";
+          const backupVal = p[f.key] || "";
+          if (currentVal !== backupVal) {
+            fieldDiffs.push({
+              field: f.label,
+              current: currentVal || "(空)",
+              backup: backupVal || "(空)"
+            });
+          }
+        });
+        const currentVaccines = summarizeVaccines(currentPigeon.vaccines);
+        const backupVaccines = summarizeVaccines(p.vaccines);
+        const currentTransfers = summarizeTransfers(currentPigeon.transfers);
+        const backupTransfers = summarizeTransfers(p.transfers);
+        const currentRaces = summarizeRaces(currentPigeon.races);
+        const backupRaces = summarizeRaces(p.races);
+        if (currentVaccines.summary !== backupVaccines.summary) {
+          fieldDiffs.push({
+            field: "疫苗",
+            current: currentVaccines.summary,
+            backup: backupVaccines.summary
+          });
+        }
+        if (currentTransfers.summary !== backupTransfers.summary) {
+          fieldDiffs.push({
+            field: "转让",
+            current: currentTransfers.summary,
+            backup: backupTransfers.summary
+          });
+        }
+        if (currentRaces.summary !== backupRaces.summary) {
+          fieldDiffs.push({
+            field: "成绩摘要",
+            current: currentRaces.summary,
+            backup: backupRaces.summary
+          });
+        }
         result.ringConflicts.push({
           ringNo: p.ringNo,
           index: idx + 1,
+          hasChanges: fieldDiffs.length > 0,
           current: {
             owner: currentPigeon.owner,
+            fatherRing: currentPigeon.fatherRing || "",
+            motherRing: currentPigeon.motherRing || "",
             color: currentPigeon.color,
-            loft: currentPigeon.loft
+            loft: currentPigeon.loft,
+            vaccines: currentVaccines,
+            transfers: currentTransfers,
+            races: currentRaces
           },
           backup: {
             owner: p.owner,
+            fatherRing: p.fatherRing || "",
+            motherRing: p.motherRing || "",
             color: p.color,
-            loft: p.loft
-          }
+            loft: p.loft,
+            vaccines: backupVaccines,
+            transfers: backupTransfers,
+            races: backupRaces
+          },
+          fieldDiffs: fieldDiffs
         });
       }
     }
@@ -700,6 +785,28 @@ const page = `<!doctype html>
     .duplicate-warn { background:#fff8e6; border:1px solid #e6d391; border-radius:8px; padding:12px; margin-top:12px; }
     .duplicate-warn h4 { margin:0 0 8px; color:var(--yellow); font-size:14px; }
     .duplicate-item { background:#fff; border:1px solid #e6d391; border-radius:4px; padding:6px 10px; margin-top:4px; font-size:13px; }
+    .diff-item { background:#fff; border:1px solid #e6d391; border-radius:6px; margin-top:6px; overflow:hidden; }
+    .diff-header { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; cursor:pointer; user-select:none; }
+    .diff-header:hover { background:#fffbeb; }
+    .diff-title { font-weight:700; }
+    .diff-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:700; margin-left:8px; }
+    .diff-badge.changed { background:#fef3c7; color:#92400e; }
+    .diff-badge.same { background:#d1fae5; color:#065f46; }
+    .diff-toggle { color:var(--muted); font-size:12px; transition:transform 0.2s; }
+    .diff-toggle.open { transform:rotate(90deg); }
+    .diff-body { display:none; padding:10px 12px; background:#fafbfc; border-top:1px solid #f0e8c8; }
+    .diff-body.open { display:block; }
+    .diff-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .diff-table th, .diff-table td { padding:6px 8px; text-align:left; border-bottom:1px solid #eee; vertical-align:top; }
+    .diff-table th { background:#f0f3f5; font-size:12px; color:var(--muted); font-weight:600; }
+    .diff-table tr.diff-row td.col-field { font-weight:600; color:var(--ink); width:90px; }
+    .diff-table tr.diff-row td.col-current { color:var(--muted); width:calc(50% - 45px); }
+    .diff-table tr.diff-row td.col-backup { color:var(--accent); width:calc(50% - 45px); font-weight:600; }
+    .diff-table tr.diff-row.changed td { background:#fffbeb; }
+    .diff-table tr.diff-row.changed td.col-backup { color:var(--yellow); }
+    .diff-arrow { color:var(--muted); margin:0 4px; }
+    .diff-expand-all { color:var(--accent); font-size:12px; cursor:pointer; text-decoration:underline; margin-left:8px; }
+    .diff-expand-all:hover { color:var(--yellow); }
     .race-date-group { margin-top:10px; }
     .race-date-label { font-weight:700; font-size:14px; color:var(--accent); border-bottom:2px solid var(--accent); padding-bottom:4px; margin-bottom:6px; }
     .race-result-row { display:flex; justify-content:space-between; align-items:center; padding:6px 10px; background:#f8fafb; border:1px solid var(--line); border-radius:6px; margin-top:4px; font-size:13px; }
@@ -2468,18 +2575,49 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         '</div>';
       let conflictHtml = "";
       if (preview.ringConflicts.length > 0) {
-        const items = preview.ringConflicts.slice(0, 20).map(c => {
-          const changed = [];
-          if (c.current.owner !== c.backup.owner) changed.push("鸽主: " + c.current.owner + " → " + c.backup.owner);
-          if (c.current.color !== c.backup.color) changed.push("羽色: " + c.current.color + " → " + c.backup.color);
-          if (c.current.loft !== c.backup.loft) changed.push("棚号: " + c.current.loft + " → " + c.backup.loft);
-          const changeText = changed.length > 0 ? changed.join(" | ") : "数据无变化";
-          return '<div class=duplicate-item><b>' + c.ringNo + '</b><br><span class=meta>' + changeText + '</span></div>';
+        const items = preview.ringConflicts.map((c, cidx) => {
+          const changedCount = c.fieldDiffs ? c.fieldDiffs.length : 0;
+          const badgeClass = changedCount > 0 ? "changed" : "same";
+          const badgeText = changedCount > 0 ? (changedCount + " 处变更") : "数据相同";
+          const allFields = ["鸽主", "父鸽环号", "母鸽环号", "羽色", "棚号", "疫苗", "转让", "成绩摘要"];
+          const fieldValues = {
+            "鸽主": { current: c.current.owner || "(空)", backup: c.backup.owner || "(空)" },
+            "父鸽环号": { current: c.current.fatherRing || "(空)", backup: c.backup.fatherRing || "(空)" },
+            "母鸽环号": { current: c.current.motherRing || "(空)", backup: c.backup.motherRing || "(空)" },
+            "羽色": { current: c.current.color || "(空)", backup: c.backup.color || "(空)" },
+            "棚号": { current: c.current.loft || "(空)", backup: c.backup.loft || "(空)" },
+            "疫苗": { current: c.current.vaccines?.summary || "无", backup: c.backup.vaccines?.summary || "无" },
+            "转让": { current: c.current.transfers?.summary || "无", backup: c.backup.transfers?.summary || "无" },
+            "成绩摘要": { current: c.current.races?.summary || "无", backup: c.backup.races?.summary || "无" }
+          };
+          const changedFieldSet = new Set((c.fieldDiffs || []).map(d => d.field));
+          const rowsHtml = allFields.map(f => {
+            const vals = fieldValues[f];
+            const isChanged = changedFieldSet.has(f);
+            const rowClass = isChanged ? "diff-row changed" : "diff-row";
+            return '<tr class="' + rowClass + '">' +
+              '<td class="col-field">' + f + '</td>' +
+              '<td class="col-current">' + vals.current + '</td>' +
+              '<td class="col-backup">' + vals.backup + '</td>' +
+              '</tr>';
+          }).join("");
+          return '<div class="diff-item" data-idx="' + cidx + '">' +
+            '<div class="diff-header" data-action="toggle-diff" data-idx="' + cidx + '">' +
+            '<span><span class="diff-title">' + c.ringNo + '</span>' +
+            '<span class="diff-badge ' + badgeClass + '">' + badgeText + '</span></span>' +
+            '<span class="diff-toggle" id="diff-toggle-' + cidx + '">▶</span>' +
+            '</div>' +
+            '<div class="diff-body" id="diff-body-' + cidx + '">' +
+            '<table class="diff-table">' +
+            '<thead><tr><th>字段</th><th>当前值</th><th>备份值</th></tr></thead>' +
+            '<tbody>' + rowsHtml + '</tbody>' +
+            '</table></div></div>';
         }).join("");
-        const more = preview.ringConflicts.length > 20 ? '<div class=hint style=margin-top:6px;>... 还有 ' + (preview.ringConflicts.length - 20) + ' 条冲突记录</div>' : "";
-        conflictHtml = '<div class=duplicate-warn><h4>⚠ 足环号冲突（' + preview.ringConflicts.length + ' 条）</h4>' +
-          '<div style=font-size:13px;margin-bottom:8px;>以下足环号在当前数据库中已存在' + (mode === "overwrite" ? "，将被覆盖。" : "，合并模式下将被更新。") + '</div>' +
-          items + more + '</div>';
+        conflictHtml = '<div class=duplicate-warn><h4>⚠ 足环号冲突（' + preview.ringConflicts.length + ' 条）' +
+          '<span class="diff-expand-all" data-action="expand-all">展开全部</span>' +
+          '<span class="diff-expand-all" data-action="collapse-all" style="margin-left:6px;">收起全部</span></h4>' +
+          '<div style=font-size:13px;margin-bottom:8px;>以下足环号在当前数据库中已存在' + (mode === "overwrite" ? "，将被覆盖。" : "，合并模式下将被更新。点击展开查看详细差异。") + '</div>' +
+          items + '</div>';
       }
       let missingHtml = "";
       if (preview.missingFields.length > 0) {
@@ -2515,6 +2653,27 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         '<button id="confirmRestoreBtn" style="' + (mode === "overwrite" ? 'background:var(--red);' : '') + '">确认恢复</button>' +
         '</div></div>';
       restorePreviewArea.innerHTML = statsHtml + conflictHtml + missingHtml + dupBackupHtml + actionsHtml;
+      restorePreviewArea.querySelectorAll('[data-action="toggle-diff"]').forEach(el => {
+        el.onclick = () => {
+          const idx = el.getAttribute("data-idx");
+          const body = document.getElementById("diff-body-" + idx);
+          const toggle = document.getElementById("diff-toggle-" + idx);
+          body.classList.toggle("open");
+          toggle.classList.toggle("open");
+        };
+      });
+      restorePreviewArea.querySelectorAll('[data-action="expand-all"]').forEach(el => {
+        el.onclick = () => {
+          restorePreviewArea.querySelectorAll(".diff-body").forEach(b => b.classList.add("open"));
+          restorePreviewArea.querySelectorAll(".diff-toggle").forEach(t => t.classList.add("open"));
+        };
+      });
+      restorePreviewArea.querySelectorAll('[data-action="collapse-all"]').forEach(el => {
+        el.onclick = () => {
+          restorePreviewArea.querySelectorAll(".diff-body").forEach(b => b.classList.remove("open"));
+          restorePreviewArea.querySelectorAll(".diff-toggle").forEach(t => t.classList.remove("open"));
+        };
+      });
       document.querySelector("#cancelRestoreBtn").onclick = () => {
         restorePreviewArea.innerHTML = "";
         restorePreviewData = null;
@@ -2628,6 +2787,32 @@ const server = http.createServer(async (req, res) => {
       if (actionMatch[2] === "vaccines") pigeon.vaccines.push({ date: input.date || new Date().toISOString().slice(0, 10), name: input.name, remark: input.remark || "" });
       await saveDb(db);
       return sendJson(res, 200, pigeon);
+    }
+    const vaccineIndexMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/vaccines\/(\d+)$/);
+    if (vaccineIndexMatch) {
+      const ringNo = decodeURIComponent(vaccineIndexMatch[1]);
+      const vIdx = parseInt(vaccineIndexMatch[2], 10);
+      const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+      if (!pigeon) return sendJson(res, 404, { error: "鸽只不存在" });
+      if (isNaN(vIdx) || vIdx < 0 || vIdx >= pigeon.vaccines.length) {
+        return sendJson(res, 400, { error: "疫苗记录索引无效" });
+      }
+      if (req.method === "PUT") {
+        const input = await body(req);
+        const existing = pigeon.vaccines[vIdx];
+        pigeon.vaccines[vIdx] = {
+          date: input.date !== undefined ? input.date : existing.date,
+          name: input.name !== undefined ? input.name : existing.name,
+          remark: input.remark !== undefined ? input.remark : existing.remark
+        };
+        await saveDb(db);
+        return sendJson(res, 200, pigeon);
+      }
+      if (req.method === "DELETE") {
+        pigeon.vaccines.splice(vIdx, 1);
+        await saveDb(db);
+        return sendJson(res, 200, pigeon);
+      }
     }
     const transferConfirmMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/transfers\/([^/]+)\/confirm$/);
     if (transferConfirmMatch && req.method === "PUT") {
