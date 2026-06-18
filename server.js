@@ -2304,7 +2304,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           if (warns > 0) parts.push('<span class="status-badge pending" style="margin-left:4px;background:var(--yellow);color:#333;">⚠ ' + warns + '</span>');
           alertBadge = parts.join("");
         }
-        const vaccineSummary = p.vaccines.length ? p.vaccines.map(v => '<div class="vaccine-item"><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">'+v.remark+'</span>':'')+'</div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
+        const vaccineSummary = p.vaccines.length ? p.vaccines.map((v, i) => '<div class="vaccine-item" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;"><div><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">'+v.remark+'</span>':'')+'</div><div style="display:flex;gap:4px;flex-shrink:0;"><button class="btn-icon" data-card-edit-vaccine="'+p.ringNo+'|'+i+'" title="编辑">✎</button><button class="btn-icon danger" data-card-delete-vaccine="'+p.ringNo+'|'+i+'" title="删除">✕</button></div></div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
         const sortedTransfers = [...p.transfers].sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date));
         const pendingCount = p.transfers.filter(t => t.status === "pending").length;
         const transferHeaderExtra = pendingCount > 0 ? ' <span class="status-badge pending" style="margin-left:6px;">待处理 '+pendingCount+'</span>' : '';
@@ -2343,6 +2343,30 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         if (!date) { alert("请选择接种日期"); return; }
         await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/vaccines', { method:'POST', body: JSON.stringify({ name, date, remark }) });
         await load();
+      });
+      document.querySelectorAll("[data-card-delete-vaccine]").forEach(btn => btn.onclick = async () => {
+        const [ringNo, indexStr] = btn.dataset.cardDeleteVaccine.split("|");
+        const index = Number(indexStr);
+        if (!confirm("确定删除这条疫苗记录？")) return;
+        try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/vaccines/'+index, { method:'DELETE' }); await load(); } catch(e) { alert("删除失败："+e.message); }
+      });
+      document.querySelectorAll("[data-card-edit-vaccine]").forEach(btn => btn.onclick = () => {
+        const [ringNo, indexStr] = btn.dataset.cardEditVaccine.split("|");
+        const index = Number(indexStr);
+        const pigeon = pigeons.find(p => p.ringNo === ringNo);
+        if (!pigeon || !pigeon.vaccines[index]) return;
+        const vaccine = pigeon.vaccines[index];
+        const item = btn.closest(".vaccine-item");
+        item.innerHTML = '<div style="width:100%;"><div class="race-edit-form" style="grid-template-columns:1fr 1fr 1fr;gap:8px;"><div><label>接种日期</label><input id="cvedit-date" type="date" value="'+vaccine.date+'"></div><div><label>疫苗名称</label><input id="cvedit-name" value="'+vaccine.name+'"></div><div><label>备注</label><input id="cvedit-remark" value="'+(vaccine.remark||'')+'"></div></div><div style="margin-top:8px;display:flex;gap:8px;"><button class="btn-small" id="cvedit-save">保存</button><button class="btn-small secondary" id="cvedit-cancel">取消</button></div></div>';
+        item.querySelector("#cvedit-save").onclick = async () => {
+          const date = item.querySelector("#cvedit-date").value;
+          const name = item.querySelector("#cvedit-name").value.trim();
+          const remark = item.querySelector("#cvedit-remark").value.trim();
+          if (!name) { alert("疫苗名称不能为空"); return; }
+          if (!date) { alert("请选择接种日期"); return; }
+          try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/vaccines/'+index, { method:'PUT', body: JSON.stringify({ date, name, remark }) }); await load(); } catch(e) { alert("保存失败："+e.message); }
+        };
+        item.querySelector("#cvedit-cancel").onclick = () => { load(); };
       });
     }
     async function loadAuditIssuesForPigeon(ringNo) {
@@ -2438,7 +2462,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           });
         }
       })();
-      const vaccineHtml = p.vaccines.length ? p.vaccines.map(v => '<div class="vaccine-item"><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">备注：'+v.remark+'</span>':'')+'</div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
+      const vaccineHtml = p.vaccines.length ? p.vaccines.map((v, i) => '<div class="vaccine-item" style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;"><div><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">备注：'+v.remark+'</span>':'')+'</div><div style="display:flex;gap:4px;flex-shrink:0;"><button class="btn-icon" data-edit-vaccine="'+p.ringNo+'|'+i+'" title="编辑">✎</button><button class="btn-icon danger" data-delete-vaccine="'+p.ringNo+'|'+i+'" title="删除">✕</button></div></div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
       const childrenHtml = data.children.length ? data.children.map(c => '<span class="pill">'+c.ringNo+'</span>').join(" ") : '<span class="meta">暂无已登记子代</span>';
       const plansHtml = data.breedingPlans && data.breedingPlans.length ? data.breedingPlans.map(plan => {
         const partner = plan.fatherRing === p.ringNo ? plan.motherRing : plan.fatherRing;
@@ -2527,6 +2551,29 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         const [ringNo, transferId] = btn.dataset.detailCancel.split("|");
         if (!confirm("确定取消此转让申请？")) return;
         try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers/'+encodeURIComponent(transferId)+'/cancel', { method:'PUT' }); await load(); } catch(e) { alert("取消失败："+e.message); }
+      });
+      detail.querySelectorAll("[data-delete-vaccine]").forEach(btn => btn.onclick = async () => {
+        const [ringNo, indexStr] = btn.dataset.deleteVaccine.split("|");
+        const index = Number(indexStr);
+        if (!confirm("确定删除这条疫苗记录？")) return;
+        try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/vaccines/'+index, { method:'DELETE' }); await load(); } catch(e) { alert("删除失败："+e.message); }
+      });
+      detail.querySelectorAll("[data-edit-vaccine]").forEach(btn => btn.onclick = () => {
+        const [ringNo, indexStr] = btn.dataset.editVaccine.split("|");
+        const index = Number(indexStr);
+        const item = btn.closest(".vaccine-item");
+        const vaccine = p.vaccines[index];
+        if (!vaccine) return;
+        item.innerHTML = '<div style="width:100%;"><div class="race-edit-form" style="grid-template-columns:1fr 1fr 1fr;gap:8px;"><div><label>接种日期</label><input id="vedit-date" type="date" value="'+vaccine.date+'"></div><div><label>疫苗名称</label><input id="vedit-name" value="'+vaccine.name+'"></div><div><label>备注</label><input id="vedit-remark" value="'+(vaccine.remark||'')+'"></div></div><div style="margin-top:8px;display:flex;gap:8px;"><button class="btn-small" id="vedit-save">保存</button><button class="btn-small secondary" id="vedit-cancel">取消</button></div></div>';
+        item.querySelector("#vedit-save").onclick = async () => {
+          const date = item.querySelector("#vedit-date").value;
+          const name = item.querySelector("#vedit-name").value.trim();
+          const remark = item.querySelector("#vedit-remark").value.trim();
+          if (!name) { alert("疫苗名称不能为空"); return; }
+          if (!date) { alert("请选择接种日期"); return; }
+          try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/vaccines/'+index, { method:'PUT', body: JSON.stringify({ date, name, remark }) }); await load(); } catch(e) { alert("保存失败："+e.message); }
+        };
+        item.querySelector("#vedit-cancel").onclick = () => { load(); };
       });
     }
     async function load(){
@@ -3741,6 +3788,29 @@ const server = http.createServer(async (req, res) => {
       if (actionMatch[2] === "vaccines") pigeon.vaccines.push({ date: input.date || new Date().toISOString().slice(0, 10), name: input.name, remark: input.remark || "" });
       await saveDb(db);
       return sendJson(res, 200, pigeon);
+    }
+    const vaccineEditMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/vaccines\/(\d+)$/);
+    if (vaccineEditMatch) {
+      const ringNo = decodeURIComponent(vaccineEditMatch[1]);
+      const index = Number(vaccineEditMatch[2]);
+      const pigeon = db.pigeons.find(item => item.ringNo === ringNo);
+      if (!pigeon) return sendJson(res, 404, { error: "鸽只不存在" });
+      if (!pigeon.vaccines || index < 0 || index >= pigeon.vaccines.length) return sendJson(res, 400, { error: "疫苗记录索引无效" });
+      if (req.method === "PUT") {
+        const input = await body(req);
+        pigeon.vaccines[index] = {
+          date: input.date || pigeon.vaccines[index].date,
+          name: input.name !== undefined ? input.name : pigeon.vaccines[index].name,
+          remark: input.remark !== undefined ? input.remark : pigeon.vaccines[index].remark
+        };
+        await saveDb(db);
+        return sendJson(res, 200, pigeon);
+      }
+      if (req.method === "DELETE") {
+        pigeon.vaccines.splice(index, 1);
+        await saveDb(db);
+        return sendJson(res, 200, pigeon);
+      }
     }
     const transferConfirmMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/transfers\/([^/]+)\/confirm$/);
     if (transferConfirmMatch && req.method === "PUT") {
