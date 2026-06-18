@@ -239,12 +239,69 @@ function validateBreedingPlan(db, fatherRing, motherRing) {
   }
   return errors;
 }
+function detectCircularLineage(db) {
+  const ringMap = new Map();
+  db.pigeons.forEach(p => ringMap.set(p.ringNo, p));
+  const foundCycles = new Set();
+  const cycles = [];
+
+  function dfs(startRingNo) {
+    const visited = new Map();
+    const path = [];
+
+    function visit(ringNo, depth) {
+      if (!ringNo || !ringNo.trim()) return null;
+      const pigeon = ringMap.get(ringNo.trim());
+      if (!pigeon) return null;
+
+      if (visited.has(ringNo.trim())) {
+        if (visited.get(ringNo.trim()) === "visiting") {
+          const cycleStartIdx = path.indexOf(ringNo.trim());
+          if (cycleStartIdx !== -1) {
+            const cyclePath = path.slice(cycleStartIdx);
+            const cycleKey = [...cyclePath].sort().join("|");
+            if (!foundCycles.has(cycleKey)) {
+              foundCycles.add(cycleKey);
+              return { path: cyclePath, depth: depth - cycleStartIdx };
+            }
+          }
+        }
+        return null;
+      }
+
+      visited.set(ringNo.trim(), "visiting");
+      path.push(ringNo.trim());
+
+      const fatherResult = visit(pigeon.fatherRing, depth + 1);
+      if (fatherResult) return fatherResult;
+      const motherResult = visit(pigeon.motherRing, depth + 1);
+      if (motherResult) return motherResult;
+
+      visited.set(ringNo.trim(), "visited");
+      path.pop();
+      return null;
+    }
+
+    return visit(startRingNo, 0);
+  }
+
+  db.pigeons.forEach(p => {
+    const result = dfs(p.ringNo);
+    if (result) {
+      cycles.push(result);
+    }
+  });
+
+  return cycles;
+}
+
 function performPedigreeAudit(db) {
   const issues = [];
   const allRingNos = new Set(db.pigeons.map(p => p.ringNo));
   const ringCountMap = new Map();
-
+  const pigeonMap = new Map();
   db.pigeons.forEach(p => {
+    pigeonMap.set(p.ringNo, p);
     const count = (ringCountMap.get(p.ringNo) || 0) + 1;
     ringCountMap.set(p.ringNo, count);
   });
@@ -312,55 +369,38 @@ function performPedigreeAudit(db) {
     }
   });
 
-  db.pigeons.forEach(p => {
-    if (p.fatherRing && p.fatherRing.trim()) {
-      const father = db.pigeons.find(fp => fp.ringNo === p.fatherRing.trim());
-      if (father) {
-        if (father.fatherRing === p.ringNo || father.motherRing === p.ringNo) {
-          issues.push({
-            id: `circular_2gen_${p.ringNo}_${p.fatherRing}`,
-            type: "circular_parent",
-            severity: "error",
-            ringNo: p.ringNo,
-            message: `两代循环血统：${p.ringNo} ↔ ${p.fatherRing}`,
-            details: `鸽只 ${p.ringNo} 的父鸽是 ${p.fatherRing}，而 ${p.fatherRing} 的父/母鸽又是 ${p.ringNo}，形成循环血统。`,
-            relatedRingNos: [p.fatherRing]
-          });
-        }
-      }
-    }
-    if (p.motherRing && p.motherRing.trim()) {
-      const mother = db.pigeons.find(mp => mp.ringNo === p.motherRing.trim());
-      if (mother) {
-        if (mother.fatherRing === p.ringNo || mother.motherRing === p.ringNo) {
-          issues.push({
-            id: `circular_2gen_${p.ringNo}_${p.motherRing}`,
-            type: "circular_parent",
-            severity: "error",
-            ringNo: p.ringNo,
-            message: `两代循环血统：${p.ringNo} ↔ ${p.motherRing}`,
-            details: `鸽只 ${p.ringNo} 的母鸽是 ${p.motherRing}，而 ${p.motherRing} 的父/母鸽又是 ${p.ringNo}，形成循环血统。`,
-            relatedRingNos: [p.motherRing]
-          });
-        }
-      }
-    }
+  const multiGenCycles = detectCircularLineage(db);
+  const recordedCycleKeys = new Set();
+  multiGenCycles.forEach(cycle => {
+    const cycleKey = [...cycle.path].sort().join("|");
+    if (recordedCycleKeys.has(cycleKey)) return;
+    recordedCycleKeys.add(cycleKey);
+    const cycleRingNo = cycle.path[0];
+    issues.push({
+      id: `circular_multigen_${cycleKey}`,
+      type: "circular_parent",
+      severity: "error",
+      ringNo: cycleRingNo,
+      message: `多代循环血统（${cycle.depth}代）：${cycle.path.join(" → ")} → ${cycle.path[0]}`,
+      details: `检测到 ${cycle.depth} 代循环血统链：${cycle.path.join(" → ")} → ${cycle.path[0]}。血统链中不能出现循环，请检查并修正父母关系。`,
+      relatedRingNos: cycle.path.slice(1),
+      extra: { cyclePath: cycle.path, cycleDepth: cycle.depth }
+    });
   });
 
-  db.pigeons.forEach(p => {
-    if (!p.transfers || p.transfers.length === 0) return;
-    if (!p.races || p.races.length === 0) return;
-
+  function getOwnerHistory(p) {
+    if (!p.transfers || p.transfers.length === 0) {
+      return [{ owner: p.owner, startDate: "0000-00-00", endDate: "9999-12-31" }];
+    }
     const confirmedTransfers = p.transfers
       .filter(t => t.status === "confirmed")
       .sort((a, b) => (a.confirmedAt || a.date).localeCompare(b.confirmedAt || b.date));
-
-    if (confirmedTransfers.length === 0) return;
-
+    if (confirmedTransfers.length === 0) {
+      return [{ owner: p.owner, startDate: "0000-00-00", endDate: "9999-12-31" }];
+    }
     const ownerHistory = [];
     let currentOwner = p.transfers[0]?.from || p.owner;
     let currentStartDate = "0000-00-00";
-
     confirmedTransfers.forEach(t => {
       ownerHistory.push({
         owner: currentOwner,
@@ -375,7 +415,12 @@ function performPedigreeAudit(db) {
       startDate: currentStartDate,
       endDate: "9999-12-31"
     });
+    return ownerHistory;
+  }
 
+  db.pigeons.forEach(p => {
+    if (!p.races || p.races.length === 0) return;
+    const ownerHistory = getOwnerHistory(p);
     p.races.forEach((race, idx) => {
       if (!race.date) return;
       const matchingOwner = ownerHistory.find(h => 
@@ -390,7 +435,7 @@ function performPedigreeAudit(db) {
           message: `成绩归属不清：${race.date} ${race.event}`,
           details: `鸽只 ${p.ringNo} 在 ${race.date} 的比赛 "${race.event}" 成绩记录时，实际归属应为 ${matchingOwner.owner}，但当前鸽主为 ${p.owner}。请检查成绩是否属于正确的鸽主。`,
           relatedRingNos: [],
-          extra: { raceDate: race.date, raceEvent: race.event, expectedOwner: matchingOwner.owner, currentOwner: p.owner }
+          extra: { raceDate: race.date, raceEvent: race.event, expectedOwner: matchingOwner.owner, currentOwner: p.owner, source: "pigeon_races" }
         });
       }
     });
@@ -421,7 +466,7 @@ function performPedigreeAudit(db) {
           message: `成绩字段异常：${race.event || "未知赛事"}`,
           details: `鸽只 ${p.ringNo} 的第 ${idx + 1} 条成绩记录存在以下问题：${fieldErrors.join("、")}。`,
           relatedRingNos: [],
-          extra: { raceIndex: idx, raceDate: race.date, raceEvent: race.event, fields: fieldErrors }
+          extra: { raceIndex: idx, raceDate: race.date, raceEvent: race.event, fields: fieldErrors, source: "pigeon_races" }
         });
       }
     });
@@ -429,9 +474,95 @@ function performPedigreeAudit(db) {
 
   if (db.raceEvents) {
     db.raceEvents.forEach(event => {
-      if (!event.results || event.results.length === 0) return;
+      const eventErrors = [];
+      if (!event.name || event.name.trim() === "") {
+        eventErrors.push("赛事名称缺失");
+      }
+      if (!event.date || event.date.trim() === "") {
+        eventErrors.push("赛事日期缺失");
+      }
+      if (event.distance === undefined || event.distance === null || isNaN(Number(event.distance)) || Number(event.distance) < 0) {
+        eventErrors.push("赛事距离字段异常");
+      }
+      if (eventErrors.length > 0) {
+        issues.push({
+          id: `event_abnormal_${event.id}`,
+          type: "abnormal_race_field",
+          severity: "warning",
+          ringNo: null,
+          eventId: event.id,
+          message: `赛事主数据异常：${event.name || "未命名赛事"}`,
+          details: `赛事 "${event.name || "未命名赛事"}"（ID: ${event.id}）存在以下问题：${eventErrors.join("、")}。`,
+          relatedRingNos: [],
+          extra: { eventId: event.id, eventName: event.name, eventDate: event.date, fields: eventErrors, source: "race_event" }
+        });
+      }
+
+      if (!event.results || event.results.length === 0) {
+        if (event.date && event.date.trim() !== "") {
+          issues.push({
+            id: `event_empty_${event.id}`,
+            type: "abnormal_race_field",
+            severity: "warning",
+            ringNo: null,
+            eventId: event.id,
+            message: `赛事无成绩记录：${event.name || "未命名赛事"}`,
+            details: `赛事 "${event.name || "未命名赛事"}"（${event.date}）已创建但没有录入任何成绩记录。`,
+            relatedRingNos: [],
+            extra: { eventId: event.id, eventName: event.name, eventDate: event.date, source: "race_event" }
+          });
+        }
+        return;
+      }
+
+      const ringSetInEvent = new Set();
+      const rankMap = new Map();
       event.results.forEach((result, idx) => {
-        const pigeon = db.pigeons.find(p => p.ringNo === result.ringNo);
+        if (ringSetInEvent.has(result.ringNo)) {
+          issues.push({
+            id: `event_dup_ring_${event.id}_${result.ringNo}`,
+            type: "duplicate_ring",
+            severity: "error",
+            ringNo: result.ringNo,
+            message: `赛事成绩中足环号重复：${result.ringNo}`,
+            details: `赛事 "${event.name}"（${event.date}）中足环号 ${result.ringNo} 出现多次，请删除重复成绩。`,
+            relatedRingNos: [],
+            extra: { eventId: event.id, eventName: event.name, eventDate: event.date, source: "race_event_results" }
+          });
+        }
+        ringSetInEvent.add(result.ringNo);
+
+        if (result.rank !== undefined && result.rank !== null && result.rank > 0) {
+          if (rankMap.has(result.rank)) {
+            issues.push({
+              id: `event_dup_rank_${event.id}_${result.rank}`,
+              type: "abnormal_race_field",
+              severity: "warning",
+              ringNo: result.ringNo,
+              message: `赛事名次重复：第${result.rank}名`,
+              details: `赛事 "${event.name}"（${event.date}）中第 ${result.rank} 名出现多次（${rankMap.get(result.rank)} 和 ${result.ringNo}）。`,
+              relatedRingNos: [rankMap.get(result.rank)],
+              extra: { eventId: event.id, eventName: event.name, eventDate: event.date, rank: result.rank, source: "race_event_results" }
+            });
+          } else {
+            rankMap.set(result.rank, result.ringNo);
+          }
+        }
+
+        if (result.rank !== undefined && result.rank !== null && !isNaN(Number(result.rank)) && Number(result.rank) < 0) {
+          issues.push({
+            id: `event_neg_rank_${event.id}_${idx}`,
+            type: "abnormal_race_field",
+            severity: "warning",
+            ringNo: result.ringNo,
+            message: `赛事名次数值异常：${result.ringNo}`,
+            details: `赛事 "${event.name}"（${event.date}）中 ${result.ringNo} 的名次数值为 ${result.rank}，不能为负数。`,
+            relatedRingNos: [],
+            extra: { eventId: event.id, eventName: event.name, eventDate: event.date, rank: result.rank, source: "race_event_results" }
+          });
+        }
+
+        const pigeon = pigeonMap.get(result.ringNo);
         if (!pigeon) {
           issues.push({
             id: `event_race_missing_${event.id}_${idx}`,
@@ -441,8 +572,56 @@ function performPedigreeAudit(db) {
             message: `赛事成绩无对应档案：${result.ringNo}`,
             details: `赛事 "${event.name}"（${event.date}）中的成绩记录 ${result.ringNo} 没有对应的鸽只档案。`,
             relatedRingNos: [],
-            extra: { eventId: event.id, eventName: event.name, eventDate: event.date, resultIndex: idx }
+            extra: { eventId: event.id, eventName: event.name, eventDate: event.date, resultIndex: idx, source: "race_event_results" }
           });
+        } else {
+          const ownerHistory = getOwnerHistory(pigeon);
+          if (event.date) {
+            const matchingOwner = ownerHistory.find(h => 
+              event.date >= h.startDate && event.date <= h.endDate
+            );
+            if (matchingOwner && matchingOwner.owner !== pigeon.owner) {
+              issues.push({
+                id: `event_ownership_${event.id}_${idx}`,
+                type: "unclear_race_ownership",
+                severity: "warning",
+                ringNo: result.ringNo,
+                message: `赛事成绩归属不清：${event.name}`,
+                details: `鸽只 ${result.ringNo} 在赛事 "${event.name}"（${event.date}）比赛时，实际归属应为 ${matchingOwner.owner}，但当前鸽主为 ${pigeon.owner}。请检查成绩归属。`,
+                relatedRingNos: [],
+                extra: { eventId: event.id, eventName: event.name, eventDate: event.date, expectedOwner: matchingOwner.owner, currentOwner: pigeon.owner, source: "race_event_results" }
+              });
+            }
+          }
+
+          if (pigeon.races && pigeon.races.length > 0) {
+            const syncedRace = pigeon.races.find(r => 
+              r.event === event.name && r.date === event.date
+            );
+            if (!syncedRace) {
+              issues.push({
+                id: `event_unsynced_${event.id}_${idx}`,
+                type: "abnormal_race_field",
+                severity: "warning",
+                ringNo: result.ringNo,
+                message: `赛事成绩未同步到鸽只档案：${event.name}`,
+                details: `鸽只 ${result.ringNo} 在赛事 "${event.name}"（${event.date}）有成绩记录，但该鸽只档案中没有对应的成绩记录，请同步数据。`,
+                relatedRingNos: [],
+                extra: { eventId: event.id, eventName: event.name, eventDate: event.date, source: "race_event_sync" }
+              });
+            } else if (result.rank && syncedRace.rank !== result.rank) {
+              issues.push({
+                id: `event_mismatch_rank_${event.id}_${idx}`,
+                type: "abnormal_race_field",
+                severity: "warning",
+                ringNo: result.ringNo,
+                message: `赛事成绩名次不一致：${event.name}`,
+                details: `鸽只 ${result.ringNo} 在赛事 "${event.name}" 中的名次，赛事主数据记录为第${result.rank}名，鸽只档案记录为第${syncedRace.rank}名，请核对修正。`,
+                relatedRingNos: [],
+                extra: { eventId: event.id, eventName: event.name, eventDate: event.date, eventRank: result.rank, pigeonRank: syncedRace.rank, source: "race_event_sync" }
+              });
+            }
+          }
         }
       });
     });
@@ -453,6 +632,20 @@ function performPedigreeAudit(db) {
     warnings: issues.filter(i => i.severity === "warning"),
     all: issues
   };
+
+  const byRingNo = {};
+  issues.forEach(issue => {
+    if (issue.ringNo) {
+      if (!byRingNo[issue.ringNo]) byRingNo[issue.ringNo] = [];
+      byRingNo[issue.ringNo].push(issue);
+    }
+    if (issue.relatedRingNos && issue.relatedRingNos.length > 0) {
+      issue.relatedRingNos.forEach(rr => {
+        if (!byRingNo[rr]) byRingNo[rr] = [];
+        byRingNo[rr].push(issue);
+      });
+    }
+  });
 
   return {
     summary: {
@@ -466,9 +659,11 @@ function performPedigreeAudit(db) {
         unclear_race_ownership: grouped.all.filter(i => i.type === "unclear_race_ownership").length,
         abnormal_race_field: grouped.all.filter(i => i.type === "abnormal_race_field").length
       },
-      totalPigeons: db.pigeons.length
+      totalPigeons: db.pigeons.length,
+      totalRaceEvents: (db.raceEvents || []).length
     },
     grouped,
+    byRingNo,
     issues
   };
 }
@@ -1248,10 +1443,43 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         filterSummary.textContent = "筛选条件：" + parts.join(" | ") + "，共显示 " + filtered.length + " / " + total + " 只";
       }
     }
+    let cachedAuditResult = null;
+    let cachedAuditPromise = null;
+    function loadAuditCache() {
+      if (cachedAuditPromise) return cachedAuditPromise;
+      cachedAuditPromise = (async () => {
+        try {
+          cachedAuditResult = await api("/api/audit/pedigree");
+          return cachedAuditResult;
+        } catch(e) {
+          cachedAuditResult = null;
+          return null;
+        }
+      })();
+      return cachedAuditPromise;
+    }
+    function getAuditIssuesForRing(ringNo) {
+      if (!cachedAuditResult || !cachedAuditResult.byRingNo) return [];
+      return cachedAuditResult.byRingNo[ringNo] || [];
+    }
+    function invalidateAuditCache() {
+      cachedAuditResult = null;
+      cachedAuditPromise = null;
+    }
     function renderCards() {
       const filtered = applyFilters();
       updateFilterSummary(filtered);
       cards.innerHTML = filtered.map(p => {
+        const issues = getAuditIssuesForRing(p.ringNo);
+        let alertBadge = "";
+        if (issues.length > 0) {
+          const errs = issues.filter(i => i.severity === "error").length;
+          const warns = issues.filter(i => i.severity === "warning").length;
+          const parts = [];
+          if (errs > 0) parts.push('<span class="status-badge pending" style="margin-left:4px;background:var(--red);color:white;">✗ ' + errs + '</span>');
+          if (warns > 0) parts.push('<span class="status-badge pending" style="margin-left:4px;background:var(--yellow);color:#333;">⚠ ' + warns + '</span>');
+          alertBadge = parts.join("");
+        }
         const vaccineSummary = p.vaccines.length ? p.vaccines.map(v => '<div class="vaccine-item"><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">'+v.remark+'</span>':'')+'</div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
         const sortedTransfers = [...p.transfers].sort((a, b) => (b.createdAt || b.date).localeCompare(a.createdAt || a.date));
         const pendingCount = p.transfers.filter(t => t.status === "pending").length;
@@ -1263,7 +1491,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           const actions = status === "pending" ? '<div class="transfer-actions"><button class="btn-small" data-confirm-transfer="'+p.ringNo+'|'+t.id+'">确认</button><button class="btn-small secondary" data-cancel-transfer="'+p.ringNo+'|'+t.id+'">取消</button></div>' : '';
           return '<div class="transfer-item '+status+'"><div class="transfer-info">'+statusBadge+' <b>'+t.from+'</b> → <b>'+t.to+'</b><br><span class="meta">申请日期：'+(t.createdAt||t.date)+(t.confirmedAt?' · 确认日期：'+t.confirmedAt:'')+(t.cancelledAt?' · 取消日期：'+t.cancelledAt:'')+'</span></div>'+actions+'</div>';
         }).join("") : '<div class="transfer-empty">暂无转让记录</div>';
-        return '<article class="card"><h3>'+p.ringNo+'</h3><span class="pill">'+p.owner+'</span><div class="meta">'+p.color+' · '+p.loft+'</div><div>父：'+(p.fatherRing || "未登记")+'</div><div>母：'+(p.motherRing || "未登记")+'</div><div class="section"><b>疫苗接种</b><div class="vaccine-list">'+vaccineSummary+'</div><label>疫苗名称</label><input data-vname="'+p.ringNo+'" placeholder="如新城疫、鸽痘"><label>接种日期</label><input data-vdate="'+p.ringNo+'" type="date"><label>备注</label><input data-vremark="'+p.ringNo+'" placeholder="选填"><button data-vaccine="'+p.ringNo+'">保存疫苗记录</button></div><div class="section"><b>转让记录</b>'+transferHeaderExtra+'<div class="transfer-list">'+transferListHtml+'</div><label>新归属人</label><input data-to="'+p.ringNo+'" placeholder="输入新归属人"><button data-transfer="'+p.ringNo+'">提交转让</button></div></article>';
+        return '<article class="card"><h3>'+p.ringNo+alertBadge+'</h3><span class="pill">'+p.owner+'</span><div class="meta">'+p.color+' · '+p.loft+'</div><div>父：'+(p.fatherRing || "未登记")+'</div><div>母：'+(p.motherRing || "未登记")+'</div><div class="section"><b>疫苗接种</b><div class="vaccine-list">'+vaccineSummary+'</div><label>疫苗名称</label><input data-vname="'+p.ringNo+'" placeholder="如新城疫、鸽痘"><label>接种日期</label><input data-vdate="'+p.ringNo+'" type="date"><label>备注</label><input data-vremark="'+p.ringNo+'" placeholder="选填"><button data-vaccine="'+p.ringNo+'">保存疫苗记录</button></div><div class="section"><b>转让记录</b>'+transferHeaderExtra+'<div class="transfer-list">'+transferListHtml+'</div><label>新归属人</label><input data-to="'+p.ringNo+'" placeholder="输入新归属人"><button data-transfer="'+p.ringNo+'">提交转让</button></div></article>';
       }).join("");
       document.querySelectorAll("[data-transfer]").forEach(btn => btn.onclick = async () => {
         const ringNo = btn.dataset.transfer; const to = document.querySelector('[data-to="'+ringNo+'"]').value.trim();
@@ -1293,9 +1521,70 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         await load();
       });
     }
+    async function loadAuditIssuesForPigeon(ringNo) {
+      const audit = await loadAuditCache();
+      if (audit && audit.byRingNo && audit.byRingNo[ringNo]) {
+        return audit.byRingNo[ringNo];
+      }
+      return [];
+    }
+    function renderPigeonAuditAlerts(issues) {
+      if (!issues || issues.length === 0) return "";
+      const errors = issues.filter(i => i.severity === "error");
+      const warnings = issues.filter(i => i.severity === "warning");
+      const renderIssueList = (list, severity) => {
+        const color = severity === "error" ? "var(--red)" : "var(--yellow)";
+        const bg = severity === "error" ? "#fff5f5" : "#fffbf0";
+        const icon = severity === "error" ? "✗" : "⚠";
+        if (list.length === 0) return "";
+        const items = list.map(issue => {
+          const typeLabel = typeLabels[issue.type] || issue.type;
+          let actionHtml = "";
+          const evtId = issue.eventId || (issue.extra && issue.extra.eventId);
+          if (evtId) {
+            actionHtml = ' <button class="btn-small secondary" data-detail-event="' + evtId + '">查看赛事</button>';
+          }
+          return '<div style="padding:8px 10px;border-left:3px solid ' + color + ';background:' + bg + ';margin-top:6px;border-radius:0 4px 4px 0;"><div style="font-size:13px;"><b>' + icon + ' ' + typeLabel + '</b>：' + issue.message + actionHtml + '</div><div class="meta" style="margin-top:2px;">' + issue.details + '</div></div>';
+        }).join("");
+        return items;
+      };
+      const titleHtml = '<div style="padding:10px 12px;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;margin-bottom:14px;">' +
+        '<div style="font-weight:700;font-size:14px;margin-bottom:6px;">⚠ 该鸽只存在审查问题（严重 ' + errors.length + '，警告 ' + warnings.length + '）</div>' +
+        renderIssueList(errors, "error") +
+        renderIssueList(warnings, "warning") +
+        '</div>';
+      return titleHtml;
+    }
     function renderRelation(data) {
       if (!data) { detail.innerHTML = '<h2>血统查询</h2><p class="meta">请输入足环号查看父母、子代、配对计划、转让、疫苗和成绩。</p>'; return; }
       const p = data.pigeon;
+      (async () => {
+        const issues = await loadAuditIssuesForPigeon(p.ringNo);
+        const alerts = renderPigeonAuditAlerts(issues);
+        if (alerts) {
+          const headerEl = detail.querySelector(".audit-alerts");
+          if (headerEl) {
+            headerEl.outerHTML = alerts;
+          } else {
+            const firstH2 = detail.querySelector("h2");
+            if (firstH2) {
+              const wrapper = document.createElement("div");
+              wrapper.innerHTML = alerts;
+              const alertEl = wrapper.firstElementChild;
+              alertEl.classList.add("audit-alerts");
+              firstH2.after(alertEl);
+            }
+          }
+          detail.querySelectorAll("[data-detail-event]").forEach(btn => {
+            btn.onclick = () => {
+              const eventId = btn.dataset.detailEvent;
+              raceModal.style.display = "block";
+              loadRaceEvents();
+              setTimeout(() => loadRaceDetail(eventId), 100);
+            };
+          });
+        }
+      })();
       const vaccineHtml = p.vaccines.length ? p.vaccines.map(v => '<div class="vaccine-item"><b>'+v.date+'</b> '+v.name+(v.remark?'<br><span class="meta">备注：'+v.remark+'</span>':'')+'</div>').join("") : '<div class="vaccine-empty">暂无接种记录</div>';
       const childrenHtml = data.children.length ? data.children.map(c => '<span class="pill">'+c.ringNo+'</span>').join(" ") : '<span class="meta">暂无已登记子代</span>';
       const plansHtml = data.breedingPlans && data.breedingPlans.length ? data.breedingPlans.map(plan => {
@@ -1361,6 +1650,9 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       pigeons = await api("/api/pigeons");
       updateFilterOptions();
       renderCards();
+      loadAuditCache().then(audit => {
+        if (audit) renderCards();
+      });
       if (currentRingNo) {
         try {
           const data = await api('/api/pigeons/'+encodeURIComponent(currentRingNo)+'/relation');
@@ -1370,7 +1662,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           currentRingNo = null;
         }
       } else {
-        renderRelation(null);
+          renderRelation(null);
       }
     }
     document.querySelector("#searchBtn").onclick = async () => {
@@ -2311,9 +2603,19 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     async function runAudit() {
       try {
         auditContent.innerHTML = '<div class="empty-state" style="padding:40px;"><div style="font-size:18px;">正在审查中...</div><p class="hint" style="margin-top:8px;">正在扫描全部档案，请稍候</p></div>';
+        invalidateAuditCache();
         const result = await api("/api/audit/pedigree");
         currentAuditResult = result;
+        cachedAuditResult = result;
+        cachedAuditPromise = Promise.resolve(result);
         renderAuditResult(result);
+        renderCards();
+        if (currentRingNo && detail.querySelector("h2")) {
+          try {
+            const data = await api('/api/pigeons/'+encodeURIComponent(currentRingNo)+'/relation');
+            renderRelation(data);
+          } catch(e) {}
+        }
       } catch(e) {
         auditContent.innerHTML = '<div class="empty-state" style="padding:40px;color:var(--red);"><div>审查失败：' + e.message + '</div><button id="retryAuditBtn" class="secondary" style="margin-top:12px;">重试</button></div>';
         document.querySelector("#retryAuditBtn").onclick = runAudit;
@@ -2337,6 +2639,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       ).join("");
       const statsHtml = '<div class="import-stats">' +
         '<div class="stat"><div class="num">' + s.totalPigeons + '</div><div class="lbl">审查鸽只</div></div>' +
+        '<div class="stat"><div class="num">' + (s.totalRaceEvents || 0) + '</div><div class="lbl">审查赛事</div></div>' +
         '<div class="stat bad"><div class="num">' + s.errors + '</div><div class="lbl">严重问题</div></div>' +
         '<div class="stat warn"><div class="num">' + s.warnings + '</div><div class="lbl">警告</div></div>' +
         '<div class="stat"><div class="num">' + s.total + '</div><div class="lbl">总问题数</div></div>' +
@@ -2370,7 +2673,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       let issuesHtml = "";
       if (filteredIssues.length === 0) {
         if (s.total === 0) {
-          issuesHtml = '<div class="result-summary" style="margin-top:16px;"><h3 style="color:var(--green);">✓ 太棒了！</h3><p class="hint">所有 ' + s.totalPigeons + ' 只鸽只档案未发现血统一致性问题。</p></div>';
+          issuesHtml = '<div class="result-summary" style="margin-top:16px;"><h3 style="color:var(--green);">✓ 太棒了！</h3><p class="hint">所有 ' + s.totalPigeons + ' 只鸽只和 ' + (s.totalRaceEvents || 0) + ' 项赛事未发现血统一致性问题。</p></div>';
         } else {
           issuesHtml = '<div class="result-summary" style="margin-top:16px;"><h3>无匹配结果</h3><p class="hint">当前筛选条件下没有问题，尝试调整筛选条件。</p></div>';
         }
@@ -2402,6 +2705,15 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           load();
         };
       });
+      document.querySelectorAll("[data-audit-event]").forEach(btn => {
+        btn.onclick = (e) => {
+          const eventId = btn.dataset.auditEvent;
+          auditModal.style.display = "none";
+          raceModal.style.display = "block";
+          loadRaceEvents();
+          setTimeout(() => loadRaceDetail(eventId), 100);
+        };
+      });
     }
     function renderIssueSection(title, severity, issues) {
       const color = severity === "error" ? "var(--red)" : "var(--yellow)";
@@ -2411,12 +2723,35 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       const issuesHtml = issues.map(issue => {
         const typeLabel = typeLabels[issue.type] || issue.type;
         const typeIcon = typeIcons[issue.type] || "";
+        const issueEventId = issue.eventId || (issue.extra && issue.extra.eventId);
         let extraHtml = "";
+        let actionHtml = "";
+        let actions = [];
+        if (issue.ringNo) {
+          actions.push('<button class="btn-small secondary" data-audit-jump="' + issue.ringNo + '">查看鸽只 ' + issue.ringNo + '</button>');
+        }
+        if (issueEventId) {
+          actions.push('<button class="btn-small secondary" data-audit-event="' + issueEventId + '">查看赛事</button>');
+        }
+        actionHtml = actions.join("");
         if (issue.extra) {
           if (issue.type === "unclear_race_ownership") {
-            extraHtml = '<div class="meta" style="margin-top:6px;">比赛日期：' + issue.extra.raceDate + ' · 赛事：' + issue.extra.raceEvent + '<br>当时归属：' + issue.extra.expectedOwner + ' · 当前鸽主：' + issue.extra.currentOwner + '</div>';
-          } else if (issue.type === "abnormal_race_field" && issue.extra.fields) {
-            extraHtml = '<div class="meta" style="margin-top:6px;">异常字段：' + issue.extra.fields.join("、") + '</div>';
+            extraHtml = '<div class="meta" style="margin-top:6px;">比赛日期：' + (issue.extra.raceDate || issue.extra.eventDate || '-') + ' · 赛事：' + (issue.extra.raceEvent || issue.extra.eventName || '-') + '<br>当时归属：' + issue.extra.expectedOwner + ' · 当前鸽主：' + issue.extra.currentOwner + '</div>';
+          } else if (issue.type === "abnormal_race_field") {
+            const parts = [];
+            if (issue.extra.fields) parts.push('异常字段：' + issue.extra.fields.join("、"));
+            if (issue.extra.source === "race_event") parts.push('来源：赛事主数据');
+            if (issue.extra.source === "race_event_results") parts.push('来源：赛事成绩');
+            if (issue.extra.source === "race_event_sync") parts.push('来源：数据同步');
+            if (issue.extra.source === "pigeon_races") parts.push('来源：鸽只档案');
+            if (issue.extra.eventRank !== undefined && issue.extra.pigeonRank !== undefined) {
+              parts.push('赛事记录名次：第' + issue.extra.eventRank + '名，鸽只档案名次：第' + issue.extra.pigeonRank + '名');
+            }
+            if (parts.length > 0) extraHtml = '<div class="meta" style="margin-top:6px;">' + parts.join(' · ') + '</div>';
+          } else if (issue.type === "circular_parent" && issue.extra.cyclePath) {
+            extraHtml = '<div class="meta" style="margin-top:6px;">循环链：' + issue.extra.cyclePath.join(" → ") + ' → ' + issue.extra.cyclePath[0] + '</div>';
+          } else if (issue.type === "duplicate_ring" && issue.extra && issue.extra.source === "race_event_results") {
+            extraHtml = '<div class="meta" style="margin-top:6px;">来源：赛事成绩记录 · 赛事：' + issue.extra.eventName + '</div>';
           }
         }
         return '<div class="plan-item" style="border-left:4px solid ' + color + ';">' +
@@ -2427,7 +2762,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           '<div class="meta" style="margin-top:6px;">' + issue.details + '</div>' +
           extraHtml +
           '</div>' +
-          '<button class="btn-small secondary" data-audit-jump="' + issue.ringNo + '">查看 ' + issue.ringNo + '</button>' +
+          '<div style="display:flex;flex-direction:column;gap:4px;">' + actionHtml + '</div>' +
           '</div>' +
           '</div>';
       }).join("");
