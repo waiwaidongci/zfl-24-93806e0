@@ -351,16 +351,14 @@ async function restoreBackupData(currentDb, backupData, mode) {
     return p && typeof p === "object" && requiredFields.every(f => p[f] && typeof p[f] === "string" && p[f].trim() !== "");
   }
   if (mode === "overwrite") {
-    currentDb.pigeons = [];
-    currentDb.breedingPlans = [];
-    currentDb.raceEvents = [];
+    const validPigeons = [];
     backup.pigeons.forEach(p => {
       if (!isValidPigeon(p)) {
         result.skipped.pigeons++;
         result.errors.push("跳过鸽只 " + (p.ringNo || "(无足环号)") + "：缺少必填字段");
         return;
       }
-      currentDb.pigeons.push({
+      validPigeons.push({
         ringNo: p.ringNo,
         owner: p.owner,
         fatherRing: p.fatherRing || "",
@@ -371,6 +369,17 @@ async function restoreBackupData(currentDb, backupData, mode) {
         transfers: p.transfers || [],
         races: p.races || []
       });
+    });
+    if (validPigeons.length === 0 && backup.pigeons.length > 0) {
+      result.success = false;
+      result.errors.unshift("覆盖模式失败：备份数据中没有有效的鸽只记录，为保护现有数据，已取消操作。");
+      return result;
+    }
+    currentDb.pigeons = [];
+    currentDb.breedingPlans = [];
+    currentDb.raceEvents = [];
+    validPigeons.forEach(p => {
+      currentDb.pigeons.push(p);
       result.added.pigeons++;
     });
     backup.breedingPlans.forEach(p => {

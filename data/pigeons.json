@@ -1,28 +1,6 @@
 {
   "pigeons": [
     {
-      "ringNo": "FINAL-TEST-002",
-      "owner": "最终测试2",
-      "fatherRing": "",
-      "motherRing": "",
-      "color": "雨点",
-      "loft": "测试棚A",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
-      "ringNo": "FINAL-TEST-001",
-      "owner": "最终测试1",
-      "fatherRing": "",
-      "motherRing": "",
-      "color": "灰",
-      "loft": "测试棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
       "ringNo": "TEST-CHILD-2",
       "owner": "测试棚",
       "fatherRing": "TEST-PARENT",
@@ -175,11 +153,11 @@
     },
     {
       "ringNo": "CHN-2026-001",
-      "owner": "冲突更新测试",
+      "owner": "北岸棚",
       "fatherRing": "CHN-2022-188",
       "motherRing": "CHN-2023-512",
-      "color": "绛",
-      "loft": "冲突更新棚",
+      "color": "灰",
+      "loft": "北岸A棚",
       "vaccines": [
         {
           "date": "2026-04-01",
