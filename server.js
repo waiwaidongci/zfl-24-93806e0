@@ -1079,11 +1079,60 @@ const page = `<!doctype html>
     .status-badge.pending { background:#fff8e6; color:#9a7b1a; border:1px solid #e6d391; }
     .status-badge.confirmed { background:#f0faf4; color:var(--green); border:1px solid #a8d5ba; }
     .status-badge.cancelled { background:#f5f5f5; color:var(--muted); border:1px solid var(--line); text-decoration:line-through; }
-    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} }
+    .offline-indicator { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:999px; font-size:12px; font-weight:700; cursor:pointer; border:1px solid var(--line); background:#fff; }
+    .offline-indicator.online { color:var(--green); border-color:#a8d5ba; background:#f0faf4; }
+    .offline-indicator.offline { color:var(--red); border-color:#f5c2be; background:#fdecea; }
+    .offline-indicator.syncing { color:var(--accent); border-color:var(--accent); background:#eef3f7; animation:pulse 1.2s infinite; }
+    .offline-indicator .dot { width:8px; height:8px; border-radius:50%; background:currentColor; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+    .queue-count { display:inline-block; min-width:20px; padding:1px 6px; border-radius:999px; background:currentColor; color:#fff; font-size:10px; text-align:center; line-height:1.4; }
+    .offline-banner { background:#fff8e6; border:1px solid #e6d391; border-radius:8px; padding:12px 16px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+    .offline-banner h4 { margin:0; color:#9a7b1a; font-size:14px; }
+    .offline-banner .meta { color:#7a6315; font-size:12px; margin-top:2px; }
+    .offline-banner .actions { display:flex; gap:6px; }
+    .queue-item { background:#fff; border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin-top:6px; display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+    .queue-item.syncing { border-color:var(--accent); background:#f0f5fa; }
+    .queue-item.success { border-color:#a8d5ba; background:#f0faf4; }
+    .queue-item.conflict { border-color:#e6d391; background:#fff8e6; }
+    .queue-item.error { border-color:#f5c2be; background:#fff5f5; }
+    .queue-item .type-icon { width:32px; height:32px; border-radius:6px; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; flex-shrink:0; background:#eef3f7; color:var(--accent); }
+    .queue-item .type-icon.pigeon { background:#e6f0e8; color:var(--green); }
+    .queue-item .type-icon.transfer { background:#f0ebf5; color:#7b4fae; }
+    .queue-item .type-icon.race { background:#fff1e6; color:#d98b3c; }
+    .queue-item .type-icon.vaccine { background:#e6f0f7; color:var(--accent); }
+    .queue-item .info { flex:1; min-width:0; }
+    .queue-item .title { font-weight:700; font-size:13px; }
+    .queue-item .desc { color:var(--muted); font-size:12px; margin-top:2px; word-break:break-all; }
+    .queue-item .time { color:var(--muted); font-size:11px; margin-top:4px; }
+    .queue-item .status-tag { display:inline-block; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700; margin-top:4px; }
+    .queue-item .status-tag.syncing { background:#eef3f7; color:var(--accent); }
+    .queue-item .status-tag.success { background:#f0faf4; color:var(--green); }
+    .queue-item .status-tag.conflict { background:#fff8e6; color:#9a7b1a; }
+    .queue-item .status-tag.error { background:#fff5f5; color:var(--red); }
+    .queue-item .actions { display:flex; gap:4px; flex-shrink:0; }
+    .conflict-detail { background:#fff; border:1px solid #e6d391; border-radius:6px; padding:12px; margin-top:8px; font-size:12px; }
+    .conflict-detail h5 { margin:0 0 8px; color:#9a7b1a; font-size:13px; }
+    .conflict-detail .compare { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .conflict-detail .col { background:#f8fafb; border-radius:4px; padding:8px; }
+    .conflict-detail .col.local { border-left:3px solid var(--accent); }
+    .conflict-detail .col.server { border-left:3px solid var(--yellow); }
+    .conflict-detail .col .label { font-weight:700; font-size:11px; color:var(--muted); margin-bottom:4px; }
+    .conflict-detail .row { display:flex; justify-content:space-between; padding:2px 0; font-size:12px; }
+    .conflict-detail .row .k { color:var(--muted); }
+    .conflict-detail .actions { display:flex; gap:6px; margin-top:10px; justify-content:flex-end; }
+    .offline-toast { position:fixed; bottom:20px; right:20px; background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px 16px; box-shadow:0 8px 24px rgba(0,0,0,0.15); z-index:2000; max-width:360px; display:none; }
+    .offline-toast.show { display:block; animation:slideIn 0.3s ease; }
+    @keyframes slideIn { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
+    .offline-toast.success { border-color:#a8d5ba; }
+    .offline-toast.conflict { border-color:#e6d391; }
+    .offline-toast.error { border-color:#f5c2be; }
+    .offline-toast .title { font-weight:700; font-size:14px; margin-bottom:4px; }
+    .offline-toast .msg { color:var(--muted); font-size:12px; }
+    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} .conflict-detail .compare { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
-  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="auditBtn" class="secondary">血统一致性审查</button><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
+  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><div id="offlineIndicator" class="offline-indicator online" title="点击查看离线队列"><span class="dot"></span><span id="offlineStatusText">在线</span><span id="offlineQueueCount" class="queue-count" style="display:none;">0</span></div><button id="auditBtn" class="secondary">血统一致性审查</button><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
   <main>
     <form id="form">
       <h2>创建鸽只档案</h2>
@@ -1096,6 +1145,16 @@ const page = `<!doctype html>
       <button>保存档案</button>
     </form>
     <section>
+      <div id="offlineBanner" class="offline-banner" style="display:none;">
+        <div>
+          <h4>⚠ 您有待同步的离线操作</h4>
+          <div class="meta">检测到 <b id="offlineBannerCount">0</b> 条操作尚未同步到服务器，数据已暂存在本地浏览器中。</div>
+        </div>
+        <div class="actions">
+          <button id="offlineBannerSync" class="btn-small">立即同步</button>
+          <button id="offlineBannerView" class="btn-small secondary">查看队列</button>
+        </div>
+      </div>
       <div class="toolbar"><input id="search" placeholder="输入足环号查询血统"><button id="searchBtn">查询</button></div>
       <div class="panel" id="detail"></div>
       <div class="filter-bar">
@@ -1398,6 +1457,31 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       </div>
     </div>
   </div>
+  <div id="offlineQueueModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal" style="max-width:900px;">
+        <div class="modal-header">
+          <h2>离线操作队列</h2>
+          <button id="closeOfflineQueue" class="secondary">关闭</button>
+        </div>
+        <div class="result-summary-bar">
+          <div id="offlineQueueSummary">共 0 条记录</div>
+          <div class="batch-actions">
+            <button id="offlineSyncAll" class="btn-small">全部同步</button>
+            <button id="offlineClearSuccess" class="btn-small secondary">清除已完成</button>
+            <button id="offlineClearAll" class="btn-small secondary danger">全部清空</button>
+          </div>
+        </div>
+        <div id="offlineQueueList" style="max-height:520px; overflow-y:auto;">
+          <div class="empty-state">暂无待同步的离线操作</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="offlineToast" class="offline-toast">
+    <div class="title" id="offlineToastTitle"></div>
+    <div class="msg" id="offlineToastMsg"></div>
+  </div>
   <script>
     const form = document.querySelector("#form");
     const cards = document.querySelector("#cards");
@@ -1410,12 +1494,520 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     let pigeons = [];
     let currentRingNo = null;
     let filters = { loft: "", owner: "", color: "" };
+    const OFFLINE_QUEUE_KEY = "zfl_offline_queue_v1";
+    const OFFLINE_SUPPORTED_PATHS = [
+      { pattern: "^/api/pigeons$", method: "POST", type: "create_pigeon", extractRingNo: function(payload){ return payload && payload.ringNo; } },
+      { pattern: "^/api/pigeons/([^/]+)/transfers$", method: "POST", type: "create_transfer" },
+      { pattern: "^/api/pigeons/([^/]+)/races$", method: "POST", type: "create_race" },
+      { pattern: "^/api/pigeons/([^/]+)/vaccines$", method: "POST", type: "create_vaccine" }
+    ];
+    const TYPE_LABELS = {
+      create_pigeon: "创建档案",
+      create_transfer: "录入转让",
+      create_race: "录入成绩",
+      create_vaccine: "录入疫苗"
+    };
+    const TYPE_ICONS = {
+      create_pigeon: "档",
+      create_transfer: "转",
+      create_race: "赛",
+      create_vaccine: "苗"
+    };
+    function detectOfflineOperation(path, method, payload) {
+      for (const rule of OFFLINE_SUPPORTED_PATHS) {
+        if (method !== rule.method) continue;
+        var regex = new RegExp(rule.pattern);
+        var match = path.match(regex);
+        if (match) {
+          var ringNo = match[1] ? decodeURIComponent(match[1]) : (rule.extractRingNo ? rule.extractRingNo(payload) : null);
+          return { type: rule.type, ringNo: ringNo, supported: true };
+        }
+      }
+      return { supported: false };
+    }
+    class OfflineQueueManager {
+      constructor() {
+        this.queue = this.load();
+        this.isOnline = navigator.onLine;
+        this.isSyncing = false;
+        this.onChangeCallbacks = [];
+      }
+      load() {
+        try {
+          const raw = localStorage.getItem(OFFLINE_QUEUE_KEY);
+          if (!raw) return [];
+          const arr = JSON.parse(raw);
+          return Array.isArray(arr) ? arr : [];
+        } catch(e) {
+          console.warn("加载离线队列失败:", e);
+          return [];
+        }
+      }
+      save() {
+        try {
+          localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(this.queue));
+        } catch(e) {
+          console.warn("保存离线队列失败:", e);
+        }
+        this.notifyChange();
+      }
+      onChange(cb) { this.onChangeCallbacks.push(cb); }
+      notifyChange() { this.onChangeCallbacks.forEach(cb => { try { cb(this.queue); } catch(e){} }); }
+      add(type, ringNo, payload, path, method) {
+        const item = {
+          id: Date.now().toString() + Math.random().toString(36).slice(2, 8),
+          type,
+          ringNo: ringNo || payload?.ringNo || null,
+          payload,
+          path,
+          method,
+          status: "pending",
+          createdAt: new Date().toISOString(),
+          result: null,
+          conflict: null,
+          error: null
+        };
+        this.queue.push(item);
+        this.save();
+        return item;
+      }
+      update(id, patch) {
+        const idx = this.queue.findIndex(i => i.id === id);
+        if (idx >= 0) {
+          this.queue[idx] = { ...this.queue[idx], ...patch };
+          this.save();
+        }
+      }
+      remove(id) {
+        this.queue = this.queue.filter(i => i.id !== id);
+        this.save();
+      }
+      clearSuccess() {
+        this.queue = this.queue.filter(i => i.status !== "success");
+        this.save();
+      }
+      clearAll() {
+        if (!confirm("确定要清空全部离线队列吗？此操作不可恢复。")) return;
+        this.queue = [];
+        this.save();
+      }
+      getPendingCount() {
+        return this.queue.filter(i => i.status === "pending" || i.status === "conflict" || i.status === "error").length;
+      }
+      getPendingAndConflictItems() {
+        return this.queue.filter(i => i.status === "pending" || i.status === "conflict");
+      }
+      async syncItem(item) {
+        this.update(item.id, { status: "syncing", result: null, conflict: null, error: null });
+        try {
+          const res = await fetch(item.path, {
+            method: item.method,
+            headers: { "Content-Type": "application/json" },
+            body: item.payload ? JSON.stringify(item.payload) : undefined
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            this.update(item.id, { status: "success", result: data, conflict: null, error: null });
+            return { success: true, item, data };
+          } else {
+            const ringExists = data.error === "ring_exists" || res.status === 409;
+            if (ringExists || data.error === "pigeon_not_found") {
+              this.update(item.id, { status: "conflict", conflict: { kind: data.error, message: data.error === "ring_exists" ? "足环号已存在" : data.error === "pigeon_not_found" ? "鸽只档案不存在" : "冲突", serverData: null }, error: null });
+              return { conflict: true, item, data };
+            }
+            if (res.status >= 500) {
+              this.update(item.id, { status: "pending", error: data.error || "服务器错误", conflict: null });
+              return { retry: true, item };
+            }
+            this.update(item.id, { status: "error", error: data.error || "请求失败", conflict: null });
+            return { error: true, item, message: data.error || "请求失败" };
+          }
+        } catch (e) {
+          this.update(item.id, { status: "pending", error: e.message || "网络错误", conflict: null });
+          return { retry: true, item };
+        }
+      }
+      async syncBatch(items) {
+        this.isSyncing = true;
+        this.notifyChange();
+        const batch = items || this.getPendingAndConflictItems();
+        const summary = { total: batch.length, success: 0, conflicts: 0, errors: 0, retries: 0, results: [] };
+        for (const item of batch) {
+          const result = await this.syncItem(item);
+          summary.results.push(result);
+          if (result.success) summary.success++;
+          else if (result.conflict) summary.conflicts++;
+          else if (result.error) summary.errors++;
+          else if (result.retry) summary.retries++;
+        }
+        this.isSyncing = false;
+        this.notifyChange();
+        return summary;
+      }
+      async syncAll() { return await this.syncBatch(); }
+      forceOverwrite(item) {
+        if (item.type === "create_pigeon" && item.conflict?.kind === "ring_exists") {
+          if (!confirm("足环号已存在，是否覆盖服务器端的档案信息？")) return false;
+        }
+        this.update(item.id, { status: "pending", conflict: null, error: null });
+        return true;
+      }
+      discardConflicts() {
+        this.queue = this.queue.filter(i => i.status !== "conflict");
+        this.save();
+      }
+    }
+    const offlineQueue = new OfflineQueueManager();
+    function renderOfflineIndicator() {
+      const indicator = document.querySelector("#offlineIndicator");
+      const statusText = document.querySelector("#offlineStatusText");
+      const countBadge = document.querySelector("#offlineQueueCount");
+      const pending = offlineQueue.getPendingCount();
+      indicator.classList.remove("online", "offline", "syncing");
+      if (offlineQueue.isSyncing) {
+        indicator.classList.add("syncing");
+        statusText.textContent = "同步中";
+      } else if (!offlineQueue.isOnline) {
+        indicator.classList.add("offline");
+        statusText.textContent = "离线";
+      } else {
+        indicator.classList.add("online");
+        statusText.textContent = "在线";
+      }
+      if (pending > 0) {
+        countBadge.style.display = "inline-block";
+        countBadge.textContent = pending;
+      } else {
+        countBadge.style.display = "none";
+      }
+    }
+    function renderOfflineBanner() {
+      const banner = document.querySelector("#offlineBanner");
+      const countEl = document.querySelector("#offlineBannerCount");
+      const pending = offlineQueue.getPendingCount();
+      if (pending > 0) {
+        countEl.textContent = pending;
+        banner.style.display = "flex";
+      } else {
+        banner.style.display = "none";
+      }
+    }
+    function describeItem(item) {
+      if (item.type === "create_pigeon") {
+        const p = item.payload || {};
+        return "足环号: " + (p.ringNo || "(无)") + " · 鸽主: " + (p.owner || "(无)");
+      }
+      if (item.type === "create_transfer") {
+        const p = item.payload || {};
+        return (item.ringNo || "(无)") + " → 新归属人: " + (p.to || "(无)");
+      }
+      if (item.type === "create_race") {
+        const p = item.payload || {};
+        return (item.ringNo || "(无)") + " · " + (p.event || "(无赛事名)") + " · " + (p.date || "");
+      }
+      if (item.type === "create_vaccine") {
+        const p = item.payload || {};
+        return (item.ringNo || "(无)") + " · " + (p.name || "(无疫苗名)") + " · " + (p.date || "");
+      }
+      return "";
+    }
+    function formatTime(iso) {
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+      } catch(e) { return iso || ""; }
+    }
+    function statusLabel(s) {
+      return { pending: "待同步", syncing: "同步中", success: "已同步", conflict: "冲突", error: "失败" }[s] || s;
+    }
+    function renderConflictDetail(item) {
+      const c = item.conflict || {};
+      if (c.kind === "ring_exists" && c.localPayload && c.serverData) {
+        const keys = ["ringNo", "owner", "fatherRing", "motherRing", "color", "loft"];
+        const labels = { ringNo: "足环号", owner: "鸽主", fatherRing: "父环号", motherRing: "母环号", color: "羽色", loft: "棚号" };
+        const rows = keys.map(k => {
+          const localVal = c.localPayload[k] || "";
+          const serverVal = c.serverData[k] || "";
+          const same = localVal === serverVal;
+          let cellContent;
+          if (same) {
+            cellContent = localVal || '<span class="meta">-</span>';
+          } else {
+            cellContent = (localVal ? '<b style="color:var(--accent)">' + localVal + '</b>' : '<span class="meta">-</span>');
+            if (!same && serverVal) {
+              cellContent += ' → <b style="color:var(--yellow)">' + serverVal + '</b>';
+            }
+          }
+          return '<div class="row"><span class="k">' + (labels[k]||k) + '</span><span>' + cellContent + '</span></div>';
+        }).join("");
+        return '<div class="conflict-detail">' +
+          '<h5>⚠ 足环号冲突：服务器已存在同号档案</h5>' +
+          '<div class="compare">' +
+          '<div class="col local"><div class="label">本地待提交</div>' + rows + '</div>' +
+          '</div>' +
+          '<div class="actions">' +
+          '<button class="btn-small secondary" data-discard="' + item.id + '">放弃本地操作</button>' +
+          '<button class="btn-small" data-retry="' + item.id + '">忽略冲突重试</button>' +
+          '</div>' +
+          '</div>';
+      }
+      const hint = c.message || "服务器数据与本地不一致";
+      let serverInfo = "";
+      if (c.serverData) {
+        serverInfo = '<div class="meta" style="margin-bottom:8px;">服务器最新状态：' + JSON.stringify(c.serverData).slice(0, 200) + '</div>';
+      }
+      return '<div class="conflict-detail">' +
+        '<h5>⚠ 冲突：' + hint + '</h5>' +
+        serverInfo +
+        '<div class="actions">' +
+        '<button class="btn-small secondary" data-discard="' + item.id + '">放弃此操作</button>' +
+        '<button class="btn-small" data-retry="' + item.id + '">强制重试</button>' +
+        '</div>' +
+        '</div>';
+    }
+    function renderOfflineQueue() {
+      const listEl = document.querySelector("#offlineQueueList");
+      const summaryEl = document.querySelector("#offlineQueueSummary");
+      if (offlineQueue.queue.length === 0) {
+        listEl.innerHTML = '<div class="empty-state">暂无待同步的离线操作</div>';
+        summaryEl.textContent = "共 0 条记录";
+        return;
+      }
+      const statusCounts = offlineQueue.queue.reduce((acc, i) => { acc[i.status] = (acc[i.status]||0) + 1; return acc; }, {});
+      summaryEl.textContent = "共 " + offlineQueue.queue.length + " 条 · 待同步 " + (statusCounts.pending||0) + " · 冲突 " + (statusCounts.conflict||0) + " · 失败 " + (statusCounts.error||0) + " · 已同步 " + (statusCounts.success||0);
+      const sorted = [...offlineQueue.queue].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+      listEl.innerHTML = sorted.map(item => {
+        const extra = item.status === "conflict" ? renderConflictDetail(item) : "";
+        const errTag = item.error ? '<div class="meta" style="margin-top:2px;color:var(--red);">' + item.error + '</div>' : "";
+        const retryBtn = (item.status !== "success" && item.status !== "syncing") ? '<button class="btn-icon" data-retry="' + item.id + '" title="重试同步">↻</button>' : "";
+        const timeExtra = (item.result && item.result.data && item.result.data.ringNo) ? ' · 已确认' : '';
+        return '<div class="queue-item ' + item.status + '">' +
+          '<div class="type-icon ' + item.type.replace('create_', '') + '">' + (TYPE_ICONS[item.type]||'?') + '</div>' +
+          '<div class="info">' +
+          '<div class="title">' + (TYPE_LABELS[item.type]||item.type) + '</div>' +
+          '<div class="desc">' + describeItem(item) + '</div>' +
+          errTag +
+          '<div class="time">提交时间: ' + formatTime(item.createdAt) + timeExtra + '</div>' +
+          '<span class="status-tag ' + item.status + '">' + statusLabel(item.status) + '</span>' +
+          extra +
+          '</div>' +
+          '<div class="actions">' +
+          retryBtn +
+          '<button class="btn-icon danger" data-remove="' + item.id + '" title="删除此记录">✕</button>' +
+          '</div>' +
+          '</div>';
+      }).join("");
+      listEl.querySelectorAll("[data-retry]").forEach(btn => {
+        btn.onclick = async () => {
+          const id = btn.dataset.retry;
+          const item = offlineQueue.queue.find(i => i.id === id);
+          if (!item) return;
+          offlineQueue.update(id, { status: "pending", conflict: null, error: null });
+          renderOfflineQueue();
+          const result = await offlineQueue.syncItem(item);
+          renderOfflineIndicator();
+          renderOfflineBanner();
+          renderOfflineQueue();
+          if (result.success) showToast("success", "同步成功", "操作已成功同步到服务器");
+          else if (result.conflict) showToast("conflict", "检测到冲突", "请在队列中查看详情并处理");
+        };
+      });
+      listEl.querySelectorAll("[data-remove]").forEach(btn => {
+        btn.onclick = () => {
+          if (!confirm("确定删除此记录？删除后不可恢复。")) return;
+          offlineQueue.remove(btn.dataset.remove);
+          renderOfflineIndicator();
+          renderOfflineBanner();
+          renderOfflineQueue();
+        };
+      });
+      listEl.querySelectorAll("[data-discard]").forEach(btn => {
+        btn.onclick = () => {
+          if (!confirm("确定放弃此操作？服务器将保持当前状态。")) return;
+          offlineQueue.remove(btn.dataset.discard);
+          renderOfflineIndicator();
+          renderOfflineBanner();
+          renderOfflineQueue();
+        };
+      });
+    }
+    let toastTimer = null;
+    function showToast(kind, title, msg) {
+      const toast = document.querySelector("#offlineToast");
+      const titleEl = document.querySelector("#offlineToastTitle");
+      const msgEl = document.querySelector("#offlineToastMsg");
+      toast.classList.remove("success", "conflict", "error");
+      toast.classList.add(kind);
+      titleEl.textContent = title;
+      msgEl.textContent = msg || "";
+      toast.classList.add("show");
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove("show"), 4000);
+    }
     async function api(path, options) {
+      const method = (options?.method || "GET").toUpperCase();
+      let payload = null;
+      if (options?.body && typeof options.body === "string") {
+        try { payload = JSON.parse(options.body); } catch(e) {}
+      }
+      const detection = detectOfflineOperation(path, method, payload);
+      try {
+        const res = await fetch(path, options && options.body ? { ...options, headers:{ "Content-Type":"application/json" } } : options);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "请求失败");
+        return data;
+      } catch (err) {
+        if (detection.supported) {
+          const isNetworkError = err.message.includes("Failed to fetch") || err.message.includes("NetworkError") || !navigator.onLine;
+          if (isNetworkError || (err && err.status >= 500)) {
+            const item = offlineQueue.add(detection.type, detection.ringNo, payload, path, method);
+            renderOfflineIndicator();
+            renderOfflineBanner();
+            showToast(isNetworkError ? "conflict" : "error",
+              isNetworkError ? "网络异常，操作已暂存" : "服务器暂时不可用",
+              "已暂存【" + TYPE_LABELS[detection.type] + "】到离线队列，" + (detection.ringNo || (payload && payload.ringNo) || "")
+            );
+            const fakeOk = {
+              ...(payload || {}),
+              vaccines: payload?.vaccines || [],
+              transfers: payload?.transfers || [],
+              races: payload?.races || [],
+              __offlinePending: true,
+              __offlineId: item.id
+            };
+            if (detection.type === "create_pigeon") {
+              pigeons.unshift(fakeOk);
+              renderCards();
+              updateFilterOptions();
+            } else if (detection.ringNo) {
+              const target = pigeons.find(p => p.ringNo === detection.ringNo);
+              if (target) {
+                if (detection.type === "create_transfer") {
+                  target.transfers = target.transfers || [];
+                  target.transfers.push({ id: item.id, date: payload?.date || new Date().toISOString().slice(0,10), from: target.owner, to: payload?.to || "", status: "pending", createdAt: new Date().toISOString().slice(0,10), confirmedAt: null, cancelledAt: null, __offlinePending: true });
+                }
+                if (detection.type === "create_race") {
+                  target.races = target.races || [];
+                  target.races.push({ date: payload?.date || new Date().toISOString().slice(0,10), event: payload?.event || "", distance: Number(payload?.distance || 0), returnTime: payload?.returnTime || "", rank: Number(payload?.rank || 0), __offlinePending: true });
+                }
+                if (detection.type === "create_vaccine") {
+                  target.vaccines = target.vaccines || [];
+                  target.vaccines.push({ date: payload?.date || new Date().toISOString().slice(0,10), name: payload?.name || "", remark: payload?.remark || "", __offlinePending: true });
+                }
+                renderCards();
+                if (currentRingNo === detection.ringNo) {
+                  try { renderRelation(await api_pure('/api/pigeons/'+encodeURIComponent(detection.ringNo)+'/relation')); } catch(e){}
+                }
+              }
+            }
+            return fakeOk;
+          }
+        }
+        throw err;
+      }
+    }
+    async function api_pure(path, options) {
       const res = await fetch(path, options && options.body ? { ...options, headers:{ "Content-Type":"application/json" } } : options);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "请求失败");
       return data;
     }
+    async function trySyncOfflineQueue() {
+      if (!offlineQueue.isOnline || offlineQueue.isSyncing) return;
+      const pending = offlineQueue.getPendingAndConflictItems();
+      if (pending.length === 0) return;
+      const summary = await offlineQueue.syncAll();
+      renderOfflineIndicator();
+      renderOfflineBanner();
+      if (summary.success > 0 || summary.conflicts > 0 || summary.errors > 0) {
+        if (summary.conflicts > 0) {
+          showToast("conflict", "部分操作存在冲突", "成功 " + summary.success + " 项 · 冲突 " + summary.conflicts + " 项 · 失败 " + summary.errors + " 项，请查看离线队列处理冲突");
+        } else if (summary.success > 0) {
+          const errPart = summary.errors ? " · 失败 " + summary.errors + " 项" : "";
+          showToast("success", "离线操作同步完成", "成功同步 " + summary.success + " 项" + errPart);
+        }
+        if (summary.success > 0) {
+          invalidateAuditCache();
+          try { await load_pure(); } catch(e) {}
+        }
+      }
+    }
+    async function load_pure() {
+      pigeons = await api_pure("/api/pigeons");
+      updateFilterOptions();
+      renderCards();
+      loadAuditCache().then(audit => { if (audit) renderCards(); });
+      if (currentRingNo) {
+        try {
+          const data = await api_pure('/api/pigeons/'+encodeURIComponent(currentRingNo)+'/relation');
+          renderRelation(data);
+        } catch(e) {
+          renderRelation(null);
+          currentRingNo = null;
+        }
+      } else {
+        renderRelation(null);
+      }
+    }
+    offlineQueue.onChange(() => {
+      renderOfflineIndicator();
+      renderOfflineBanner();
+    });
+    window.addEventListener("online", () => {
+      offlineQueue.isOnline = true;
+      renderOfflineIndicator();
+      showToast("success", "网络已恢复", "正在尝试同步离线队列...");
+      setTimeout(trySyncOfflineQueue, 1500);
+    });
+    window.addEventListener("offline", () => {
+      offlineQueue.isOnline = false;
+      renderOfflineIndicator();
+      showToast("conflict", "网络已断开", "操作将暂存到本地，恢复网络后自动同步");
+    });
+    document.querySelector("#offlineIndicator").onclick = () => {
+      document.querySelector("#offlineQueueModal").style.display = "block";
+      renderOfflineQueue();
+    };
+    document.querySelector("#closeOfflineQueue").onclick = () => {
+      document.querySelector("#offlineQueueModal").style.display = "none";
+    };
+    document.querySelector("#offlineSyncAll").onclick = async () => {
+      if (offlineQueue.isSyncing) return;
+      const summary = await offlineQueue.syncAll();
+      renderOfflineQueue();
+      if (summary.conflicts > 0) showToast("conflict", "检测到冲突", "请在下方列表中处理冲突项");
+      else if (summary.success > 0) {
+        showToast("success", "同步完成", "成功同步 " + summary.success + " 项");
+        invalidateAuditCache();
+        try { await load_pure(); } catch(e) {}
+      } else if (summary.errors > 0) {
+        showToast("error", "同步失败", "部分操作同步失败，请重试或检查网络");
+      }
+    };
+    document.querySelector("#offlineClearSuccess").onclick = () => {
+      offlineQueue.clearSuccess();
+      renderOfflineQueue();
+    };
+    document.querySelector("#offlineClearAll").onclick = () => {
+      offlineQueue.clearAll();
+      renderOfflineQueue();
+    };
+    document.querySelector("#offlineBannerSync").onclick = () => {
+      document.querySelector("#offlineSyncAll").click();
+    };
+    document.querySelector("#offlineBannerView").onclick = () => {
+      document.querySelector("#offlineQueueModal").style.display = "block";
+      renderOfflineQueue();
+    };
+    document.addEventListener("DOMContentLoaded", () => {
+      offlineQueue.isOnline = navigator.onLine;
+      renderOfflineIndicator();
+      renderOfflineBanner();
+      const pending = offlineQueue.getPendingCount();
+      if (pending > 0 && navigator.onLine) {
+        setTimeout(trySyncOfflineQueue, 2500);
+      }
+    });
     function getUniqueValues(arr, key) {
       const values = new Set();
       arr.forEach(item => { if (item[key] && item[key].trim()) values.add(item[key].trim()); });
@@ -3223,6 +3815,114 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/audit/pedigree") {
       const result = performPedigreeAudit(db);
       return sendJson(res, 200, result);
+    }
+    if (req.method === "POST" && url.pathname === "/api/offline/sync") {
+      const input = await body(req);
+      const items = input.items || [];
+      const results = [];
+      let dbModified = false;
+      for (const item of items) {
+        const result = { id: item.id, type: item.type, status: "pending", conflict: null, data: null, error: null };
+        try {
+          if (item.type === "create_pigeon") {
+            const inputData = item.payload || {};
+            const existing = db.pigeons.find(p => p.ringNo === inputData.ringNo);
+            if (existing) {
+              result.status = "conflict";
+              result.conflict = {
+                kind: "ring_exists",
+                message: "足环号已存在",
+                localPayload: inputData,
+                serverData: existing
+              };
+            } else {
+              const pigeon = { ...inputData, vaccines: [], transfers: [], races: [] };
+              db.pigeons.unshift(pigeon);
+              result.status = "success";
+              result.data = pigeon;
+              dbModified = true;
+            }
+          } else if (item.type === "create_transfer") {
+            const ringNo = item.ringNo;
+            const inputData = item.payload || {};
+            const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+            if (!pigeon) {
+              result.status = "conflict";
+              result.conflict = { kind: "pigeon_not_found", message: "鸽只档案不存在，可能已被删除" };
+            } else {
+              const today = localDateString();
+              const to = (inputData.to || "").trim();
+              if (!to) {
+                result.status = "error";
+                result.error = "新归属人不能为空";
+              } else if (to === pigeon.owner) {
+                result.status = "conflict";
+                result.conflict = {
+                  kind: "owner_same",
+                  message: "当前鸽主已变更为目标归属人，无需转让",
+                  serverData: { owner: pigeon.owner }
+                };
+              } else {
+                const hasPending = pigeon.transfers.some(t => t.status === "pending");
+                if (hasPending) {
+                  result.status = "conflict";
+                  result.conflict = {
+                    kind: "has_pending",
+                    message: "该鸽只已有待确认的转让申请",
+                    serverData: pigeon.transfers.filter(t => t.status === "pending")
+                  };
+                } else {
+                  const transfer = { id: Date.now().toString() + Math.random().toString(36).slice(2, 6), date: inputData.date || today, from: pigeon.owner, to, status: "pending", createdAt: today, confirmedAt: null, cancelledAt: null };
+                  pigeon.transfers.push(transfer);
+                  result.status = "success";
+                  result.data = pigeon;
+                  dbModified = true;
+                }
+              }
+            }
+          } else if (item.type === "create_race") {
+            const ringNo = item.ringNo;
+            const inputData = item.payload || {};
+            const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+            if (!pigeon) {
+              result.status = "conflict";
+              result.conflict = { kind: "pigeon_not_found", message: "鸽只档案不存在，可能已被删除" };
+            } else {
+              const race = { date: inputData.date || new Date().toISOString().slice(0, 10), event: inputData.event, distance: Number(inputData.distance || 0), returnTime: inputData.returnTime || "", rank: Number(inputData.rank || 0) };
+              pigeon.races.push(race);
+              result.status = "success";
+              result.data = pigeon;
+              dbModified = true;
+            }
+          } else if (item.type === "create_vaccine") {
+            const ringNo = item.ringNo;
+            const inputData = item.payload || {};
+            const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+            if (!pigeon) {
+              result.status = "conflict";
+              result.conflict = { kind: "pigeon_not_found", message: "鸽只档案不存在，可能已被删除" };
+            } else {
+              const vaccine = { date: inputData.date || new Date().toISOString().slice(0, 10), name: inputData.name, remark: inputData.remark || "" };
+              pigeon.vaccines.push(vaccine);
+              result.status = "success";
+              result.data = pigeon;
+              dbModified = true;
+            }
+          } else {
+            result.status = "error";
+            result.error = "未知操作类型: " + item.type;
+          }
+        } catch (err) {
+          result.status = "error";
+          result.error = err.message;
+        }
+        results.push(result);
+      }
+      if (dbModified) await saveDb(db);
+      const success = results.filter(r => r.status === "success").length;
+      const conflicts = results.filter(r => r.status === "conflict").length;
+      const errors = results.filter(r => r.status === "error").length;
+      return sendJson(res, 200, { success, conflicts, errors, total: results.length, results });
     }
     sendJson(res, 404, { error: "not_found" });
   } catch (error) {
