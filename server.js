@@ -18,6 +18,25 @@ const seed = {
   raceEvents: []
 };
 
+const BREEDING_STATUSES = {
+  PLANNED: "planned",
+  PAIRED: "paired",
+  HATCHED: "hatched",
+  CANCELLED: "cancelled"
+};
+const BREEDING_STATUS_LABELS = {
+  planned: "计划中",
+  paired: "已配对",
+  hatched: "已出雏",
+  cancelled: "已取消"
+};
+const BREEDING_STATUS_TRANSITIONS = {
+  planned: ["paired", "cancelled"],
+  paired: ["hatched", "cancelled", "planned"],
+  hatched: ["cancelled"],
+  cancelled: []
+};
+
 async function loadDb() {
   if (!existsSync(dbPath)) {
     await mkdir(dirname(dbPath), { recursive: true });
@@ -31,6 +50,16 @@ async function loadDb() {
     p.transfers.forEach(t => {
       if (!t.status) { t.status = "confirmed"; t.id = t.id || Date.now().toString() + Math.random().toString(36).slice(2,6); t.createdAt = t.createdAt || t.date; t.confirmedAt = t.confirmedAt || t.date; t.cancelledAt = t.cancelledAt || null; }
     });
+  });
+  db.breedingPlans.forEach(plan => {
+    if (!plan.status) plan.status = BREEDING_STATUSES.PLANNED;
+    if (!plan.statusHistory) plan.statusHistory = [{ status: plan.status, at: plan.createdAt || plan.planDate }];
+    if (!plan.offspring) plan.offspring = [];
+    if (!plan.pairedAt) plan.pairedAt = null;
+    if (!plan.hatchedAt) plan.hatchedAt = null;
+    if (!plan.cancelledAt) plan.cancelledAt = null;
+    if (!plan.cancelReason) plan.cancelReason = "";
+    if (!plan.id) plan.id = Date.now().toString() + Math.random().toString(36).slice(2,6);
   });
   return db;
 }
@@ -237,6 +266,44 @@ function validateBreedingPlan(db, fatherRing, motherRing) {
     if (fatherDescendants.has(motherRing)) errors.push("母鸽是父鸽的子代，不能反向作为父母");
     const motherDescendants = new Set(getAllDescendants(db, motherRing));
     if (motherDescendants.has(fatherRing)) errors.push("父鸽是母鸽的子代，不能反向作为父母");
+  }
+  return errors;
+}
+function canTransitionStatus(currentStatus, nextStatus) {
+  const allowed = BREEDING_STATUS_TRANSITIONS[currentStatus] || [];
+  return allowed.includes(nextStatus);
+}
+function validateOffspringAgainstParents(db, fatherRing, motherRing, offspringRing) {
+  const errors = [];
+  if (!offspringRing || !offspringRing.trim()) { errors.push("子代足环号不能为空"); return errors; }
+  if (offspringRing === fatherRing) errors.push("子代不能是父鸽本身");
+  if (offspringRing === motherRing) errors.push("子代不能是母鸽本身");
+  const offspringExists = db.pigeons.some(p => p.ringNo === offspringRing);
+  if (!offspringExists) return errors;
+  const offspring = db.pigeons.find(p => p.ringNo === offspringRing);
+  if (offspring.fatherRing && offspring.fatherRing !== fatherRing) {
+    errors.push(`子代${offspringRing}已登记父鸽为${offspring.fatherRing}，与计划父鸽${fatherRing}不符`);
+  }
+  if (offspring.motherRing && offspring.motherRing !== motherRing) {
+    errors.push(`子代${offspringRing}已登记母鸽为${offspring.motherRing}，与计划母鸽${motherRing}不符`);
+  }
+  const offspringDescendants = new Set(getAllDescendants(db, offspringRing));
+  if (offspringDescendants.has(fatherRing)) errors.push("父鸽是子代的后代，存在循环血统");
+  if (offspringDescendants.has(motherRing)) errors.push("母鸽是子代的后代，存在循环血统");
+  return errors;
+}
+function validateNewOffspringPigeon(db, pigeonData, fatherRing, motherRing) {
+  const errors = [];
+  const requiredFields = ["ringNo", "owner", "color", "loft"];
+  const fieldLabels = { ringNo: "足环号", owner: "鸽主", color: "羽色", loft: "棚号" };
+  requiredFields.forEach(f => {
+    if (!pigeonData[f] || !String(pigeonData[f]).trim()) errors.push(`缺少${fieldLabels[f]}`);
+  });
+  if (pigeonData.ringNo) {
+    const ringNo = String(pigeonData.ringNo).trim();
+    if (db.pigeons.some(p => p.ringNo === ringNo)) errors.push("足环号已存在");
+    if (ringNo === fatherRing) errors.push("子代足环号不能与父鸽相同");
+    if (ringNo === motherRing) errors.push("子代足环号不能与母鸽相同");
   }
   return errors;
 }
@@ -466,7 +533,13 @@ async function restoreBackupData(currentDb, backupData, mode) {
 }
 
 function getPigeonBreedingPlans(db, ringNo) {
-  return db.breedingPlans.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
+  return db.breedingPlans.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo).map(plan => {
+    const offspringDetails = (plan.offspring || []).map(r => {
+      const p = db.pigeons.find(item => item.ringNo === r);
+      return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo: r, exists: false };
+    });
+    return { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] || plan.status };
+  });
 }
 
 function getPigeonRaceResults(db, ringNo) {
@@ -806,30 +879,119 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
   </div>
   <div id="breedingModal" style="display:none;">
     <div class="modal-backdrop">
-      <div class="modal">
+      <div class="modal" style="max-width:1100px;">
         <div class="modal-header">
           <h2>繁育配对计划</h2>
           <button id="closeBreeding" class="secondary">关闭</button>
         </div>
-        <div class="breeding-grid">
-          <div class="panel">
-            <h3>创建配对计划</h3>
-            <form id="breedingForm">
-              <label>父鸽足环号</label>
-              <input name="fatherRing" required placeholder="请输入父鸽足环号">
-              <label>母鸽足环号</label>
-              <input name="motherRing" required placeholder="请输入母鸽足环号">
-              <label>计划配对日期</label>
-              <input name="planDate" type="date">
-              <label>目标/备注</label>
-              <textarea name="remark" rows="3" placeholder="如：培育赛绩鸽、提纯血统等"></textarea>
-              <button style="margin-top:10px;">创建配对计划</button>
-            </form>
+        <div style="display:grid; grid-template-columns:320px 1fr; gap:16px;">
+          <div>
+            <div class="panel">
+              <h3>创建配对计划</h3>
+              <form id="breedingForm">
+                <label>父鸽足环号</label>
+                <input name="fatherRing" required placeholder="请输入父鸽足环号">
+                <label>母鸽足环号</label>
+                <input name="motherRing" required placeholder="请输入母鸽足环号">
+                <label>计划配对日期</label>
+                <input name="planDate" type="date">
+                <label>目标/备注</label>
+                <textarea name="remark" rows="3" placeholder="如：培育赛绩鸽、提纯血统等"></textarea>
+                <button style="margin-top:10px;">创建配对计划</button>
+              </form>
+            </div>
+            <div class="panel" style="margin-top:16px;">
+              <h3>计划列表</h3>
+              <div id="breedingPlanList" style="max-height:420px; overflow-y:auto;"></div>
+            </div>
           </div>
           <div class="panel">
-            <h3>配对计划列表</h3>
-            <div id="breedingPlanList" style="max-height:420px; overflow-y:auto;"></div>
+            <div id="breedingPlanDetailEmpty">
+              <h3>选择计划查看详情</h3>
+              <div class="empty-state" style="margin-top:12px;">请从左侧列表中选择一个繁育计划</div>
+            </div>
+            <div id="breedingPlanDetailContent" style="display:none;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px;">
+                <div>
+                  <h3 id="planDetailTitle" style="margin:0 0 8px 0;"></h3>
+                  <div id="planDetailStatus" style="margin-bottom:8px;"></div>
+                  <div id="planDetailMeta" class="meta"></div>
+                </div>
+                <div id="planDetailActions" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+              </div>
+              <div id="planEditSection" style="display:none; padding:12px; background:#f8fafb; border:1px solid var(--line); border-radius:8px; margin-bottom:16px;">
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                  <div><label>计划日期</label><input id="editPlanDate" type="date"></div>
+                </div>
+                <label style="margin-top:10px; display:block;">备注</label>
+                <textarea id="editPlanRemark" rows="2" style="width:100%;"></textarea>
+                <div style="margin-top:10px; display:flex; gap:8px;">
+                  <button id="savePlanEditBtn">保存修改</button>
+                  <button id="cancelPlanEditBtn" class="secondary">取消</button>
+                </div>
+              </div>
+              <div id="planStatusHistorySection" style="margin-bottom:16px;">
+                <h4 style="margin:0 0 10px 0;">状态流转记录</h4>
+                <div id="planStatusHistory" class="meta"></div>
+              </div>
+              <div id="planOffspringSection">
+                <h4 style="margin:0 0 10px 0;">子代鸽只</h4>
+                <div id="planOffspringActions" style="margin-bottom:10px; display:flex; gap:8px;"></div>
+                <div id="planOffspringList"></div>
+              </div>
+            </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="statusTransitionModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal" style="max-width:440px;">
+        <div class="modal-header">
+          <h2 id="statusTransitionTitle">变更状态</h2>
+          <button id="closeStatusTransition" class="secondary">取消</button>
+        </div>
+        <form id="statusTransitionForm" style="margin-top:10px;">
+          <label id="statusTransitionDateLabel">日期</label>
+          <input name="date" type="date">
+          <label id="statusTransitionReasonLabel" style="display:none;">取消原因</label>
+          <textarea name="cancelReason" rows="2" style="display:none;" placeholder="请说明取消原因"></textarea>
+          <label>备注</label>
+          <textarea name="remark" rows="2" placeholder="可选"></textarea>
+          <button style="margin-top:10px;" id="confirmStatusTransition">确认变更</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  <div id="offspringModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2 id="offspringModalTitle">关联子代</h2>
+          <button id="closeOffspringModal" class="secondary">取消</button>
+        </div>
+        <div id="offspringTabBar" style="display:flex; border-bottom:2px solid var(--line); margin-bottom:14px;">
+          <div class="race-tab active" data-offspring-tab="link">选择已有鸽只</div>
+          <div class="race-tab" data-offspring-tab="create">创建新鸽只</div>
+        </div>
+        <div id="offspring-link-tab" class="race-tab-content active">
+          <label>子代鸽足环号</label>
+          <input id="linkOffspringRing" placeholder="请输入已存在的足环号">
+          <div class="hint" style="color:var(--muted); font-size:13px; margin-top:6px;">该鸽只的父母环号将自动回填（若为空）。</div>
+          <button id="confirmLinkOffspring" style="margin-top:14px;">确认关联</button>
+        </div>
+        <div id="offspring-create-tab" class="race-tab-content" style="display:none;">
+          <div class="hint" style="color:var(--blue); font-size:13px; margin-bottom:10px;">父母环号将自动回填为计划的父鸽和母鸽。</div>
+          <label>足环号</label>
+          <input id="createOffspringRing" placeholder="如：CHN-2026-001" required>
+          <label>鸽主</label>
+          <input id="createOffspringOwner" placeholder="鸽主姓名" required>
+          <label>羽色</label>
+          <input id="createOffspringColor" placeholder="如：灰、雨点、红轮" required>
+          <label>棚号</label>
+          <input id="createOffspringLoft" placeholder="出生棚号" required>
+          <button id="confirmCreateOffspring" style="margin-top:14px;">创建并关联</button>
         </div>
       </div>
     </div>
@@ -1143,7 +1305,12 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       const plansHtml = data.breedingPlans && data.breedingPlans.length ? data.breedingPlans.map(plan => {
         const partner = plan.fatherRing === p.ringNo ? plan.motherRing : plan.fatherRing;
         const role = plan.fatherRing === p.ringNo ? "父鸽" : "母鸽";
-        return '<div class="plan-item"><div><b>'+partner+'</b> <span class="meta">（'+role+'）</span></div><div class="meta">计划日期：'+plan.planDate+'</div>'+(plan.remark ? '<div class="meta">目标：'+plan.remark+'</div>' : '')+'</div>';
+        const statusClass = { planned: "pending", paired: "confirmed", hatched: "confirmed", cancelled: "cancelled" }[plan.status] || "";
+        const statusBadge = '<span class="status-badge ' + statusClass + '" style="font-size:11px;padding:2px 6px;">' + (plan.statusLabel || plan.status) + '</span>';
+        const offspringText = (plan.offspringDetails && plan.offspringDetails.length) 
+          ? '<div class="meta">子代：' + plan.offspringDetails.map(o => o.ringNo).join("、") + '</div>' 
+          : '';
+        return '<div class="plan-item" style="cursor:pointer;" data-view-breeding-plan="'+plan.id+'" title="点击查看繁育计划详情"><div style="display:flex;align-items:center;gap:8px;"><b>'+partner+'</b> <span class="meta">（'+role+'）</span> '+statusBadge+'</div><div class="meta">计划日期：'+plan.planDate+'</div>'+(plan.remark ? '<div class="meta">目标：'+plan.remark+'</div>' : '')+offspringText+'</div>';
       }).join("") : '<div class="vaccine-empty">暂无配对计划</div>';
       let raceResultsHtml = '';
       const raceResults = data.raceResults || [];
@@ -1210,6 +1377,16 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         if (!confirm("确定取消此转让申请？")) return;
         try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers/'+encodeURIComponent(transferId)+'/cancel', { method:'PUT' }); await load(); } catch(e) { alert("取消失败："+e.message); }
       });
+      detail.querySelectorAll("[data-view-breeding-plan]").forEach(el => {
+        el.onclick = (e) => {
+          e.stopPropagation();
+          const planId = el.dataset.viewBreedingPlan;
+          currentBreedingPlanId = planId;
+          breedingModal.style.display = "block";
+          loadBreedingPlans();
+          setTimeout(() => loadBreedingPlanDetail(planId), 100);
+        };
+      });
     }
     async function load(){
       pigeons = await api("/api/pigeons");
@@ -1262,8 +1439,26 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     const breedingModal = document.querySelector("#breedingModal");
     const breedingForm = document.querySelector("#breedingForm");
     const breedingPlanList = document.querySelector("#breedingPlanList");
-    document.querySelector("#breedingBtn").onclick = () => { breedingModal.style.display = "block"; loadBreedingPlans(); };
-    document.querySelector("#closeBreeding").onclick = () => { breedingModal.style.display = "none"; };
+    const breedingPlanDetailEmpty = document.querySelector("#breedingPlanDetailEmpty");
+    const breedingPlanDetailContent = document.querySelector("#breedingPlanDetailContent");
+    let currentBreedingPlanId = null;
+    let currentBreedingPlan = null;
+    let pendingStatusTransition = null;
+    const statusLabels = { planned: "计划中", paired: "已配对", hatched: "已出雏", cancelled: "已取消" };
+    const statusClassMap = { planned: "pending", paired: "confirmed", hatched: "confirmed", cancelled: "cancelled" };
+    document.querySelector("#breedingBtn").onclick = () => {
+      breedingModal.style.display = "block";
+      currentBreedingPlanId = null;
+      currentBreedingPlan = null;
+      breedingPlanDetailEmpty.style.display = "block";
+      breedingPlanDetailContent.style.display = "none";
+      loadBreedingPlans();
+    };
+    document.querySelector("#closeBreeding").onclick = () => {
+      breedingModal.style.display = "none";
+      currentBreedingPlanId = null;
+      currentBreedingPlan = null;
+    };
     async function loadBreedingPlans() {
       try {
         const plans = await api("/api/breeding-plans");
@@ -1272,30 +1467,253 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         breedingPlanList.innerHTML = '<div class="hint" style="color:var(--red);">加载失败：' + e.message + '</div>';
       }
     }
+    function getStatusBadge(status) {
+      const cls = statusClassMap[status] || "";
+      return '<span class="status-badge ' + cls + '">' + (statusLabels[status] || status) + '</span>';
+    }
     function renderBreedingPlans(plans) {
       if (!plans || plans.length === 0) {
         breedingPlanList.innerHTML = '<div class="vaccine-empty">暂无配对计划</div>';
         return;
       }
-      breedingPlanList.innerHTML = plans.map(plan => {
-        return '<div class="plan-card"><h4>'+plan.fatherRing+' × '+plan.motherRing+'</h4><div class="plan-meta">计划日期：'+plan.planDate+'</div>'+(plan.remark ? '<div class="plan-meta">目标：'+plan.remark+'</div>' : '')+'<div class="plan-meta">创建日期：'+plan.createdAt+'</div><div class="plan-actions"><button class="secondary danger" data-del-plan="'+plan.id+'">删除</button></div></div>';
+      const sorted = [...plans].sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+      breedingPlanList.innerHTML = sorted.map(plan => {
+        const active = plan.id === currentBreedingPlanId ? ' style="border-color:var(--accent);background:#f0f5fa;"' : '';
+        return '<div class="plan-card"'+active+'><h4>'+plan.fatherRing+' × '+plan.motherRing+'</h4><div style="margin:6px 0;">'+getStatusBadge(plan.status)+'</div><div class="plan-meta">计划日期：'+plan.planDate+'</div>'+(plan.remark ? '<div class="plan-meta">目标：'+plan.remark+'</div>' : '')+'<div class="plan-meta">创建日期：'+plan.createdAt+'</div><div class="plan-actions"><button class="secondary" data-view-plan="'+plan.id+'">查看</button><button class="secondary danger" data-del-plan="'+plan.id+'">删除</button></div></div>';
       }).join("");
+      document.querySelectorAll("[data-view-plan]").forEach(btn => btn.onclick = () => {
+        currentBreedingPlanId = btn.dataset.viewPlan;
+        loadBreedingPlanDetail(currentBreedingPlanId);
+      });
       document.querySelectorAll("[data-del-plan]").forEach(btn => btn.onclick = async () => {
         if (!confirm("确定要删除这个配对计划吗？")) return;
         try {
           await api('/api/breeding-plans/'+encodeURIComponent(btn.dataset.delPlan), { method:'DELETE' });
-          loadBreedingPlans();
-          if (currentRingNo) {
-            try {
-              const data = await api('/api/pigeons/'+encodeURIComponent(currentRingNo)+'/relation');
-              renderRelation(data);
-            } catch(e) {}
+          if (currentBreedingPlanId === btn.dataset.delPlan) {
+            currentBreedingPlanId = null;
+            currentBreedingPlan = null;
+            breedingPlanDetailEmpty.style.display = "block";
+            breedingPlanDetailContent.style.display = "none";
           }
+          loadBreedingPlans();
+          refreshPigeonDetail();
         } catch(e) {
           alert("删除失败：" + e.message);
         }
       });
     }
+    async function loadBreedingPlanDetail(planId) {
+      try {
+        const plan = await api('/api/breeding-plans/'+encodeURIComponent(planId));
+        currentBreedingPlan = plan;
+        breedingPlanDetailEmpty.style.display = "none";
+        breedingPlanDetailContent.style.display = "block";
+        renderBreedingPlanDetail(plan);
+        loadBreedingPlans();
+      } catch(e) {
+        alert("加载计划详情失败：" + e.message);
+      }
+    }
+    function renderBreedingPlanDetail(plan) {
+      document.querySelector("#planDetailTitle").textContent = plan.fatherRing + " × " + plan.motherRing;
+      document.querySelector("#planDetailStatus").innerHTML = getStatusBadge(plan.status);
+      const metaParts = [];
+      metaParts.push("计划日期：" + plan.planDate);
+      metaParts.push("创建日期：" + plan.createdAt);
+      if (plan.pairedAt) metaParts.push("配对日期：" + plan.pairedAt);
+      if (plan.hatchedAt) metaParts.push("出雏日期：" + plan.hatchedAt);
+      if (plan.cancelledAt) metaParts.push("取消日期：" + plan.cancelledAt);
+      if (plan.cancelReason) metaParts.push("取消原因：" + plan.cancelReason);
+      if (plan.remark) metaParts.push("目标/备注：" + plan.remark);
+      document.querySelector("#planDetailMeta").innerHTML = metaParts.map(m => '<div>'+m+'</div>').join("");
+      const actionsDiv = document.querySelector("#planDetailActions");
+      let actionsHtml = '';
+      if (plan.status === "planned") {
+        actionsHtml += '<button class="btn-small" data-to-status="paired">标记已配对</button>';
+        actionsHtml += '<button class="btn-small secondary danger" data-to-status="cancelled">取消计划</button>';
+      } else if (plan.status === "paired") {
+        actionsHtml += '<button class="btn-small" data-to-status="hatched">标记已出雏</button>';
+        actionsHtml += '<button class="btn-small secondary" data-to-status="planned">撤回计划中</button>';
+        actionsHtml += '<button class="btn-small secondary danger" data-to-status="cancelled">取消计划</button>';
+      } else if (plan.status === "hatched") {
+        actionsHtml += '<button class="btn-small secondary danger" data-to-status="cancelled">取消计划</button>';
+      }
+      actionsHtml += '<button class="btn-small secondary" id="editPlanBtn">编辑</button>';
+      actionsDiv.innerHTML = actionsHtml;
+      actionsDiv.querySelectorAll("[data-to-status]").forEach(btn => btn.onclick = () => openStatusTransition(btn.dataset.toStatus));
+      const editBtn = actionsDiv.querySelector("#editPlanBtn");
+      if (editBtn) editBtn.onclick = () => {
+        document.querySelector("#planEditSection").style.display = "block";
+        document.querySelector("#editPlanDate").value = plan.planDate || "";
+        document.querySelector("#editPlanRemark").value = plan.remark || "";
+      };
+      document.querySelector("#cancelPlanEditBtn").onclick = () => {
+        document.querySelector("#planEditSection").style.display = "none";
+      };
+      document.querySelector("#savePlanEditBtn").onclick = async () => {
+        const planDate = document.querySelector("#editPlanDate").value;
+        const remark = document.querySelector("#editPlanRemark").value;
+        try {
+          const updated = await api('/api/breeding-plans/'+encodeURIComponent(plan.id), {
+            method:'PUT',
+            body: JSON.stringify({ planDate, remark })
+          });
+          currentBreedingPlan = updated;
+          renderBreedingPlanDetail(updated);
+          document.querySelector("#planEditSection").style.display = "none";
+          loadBreedingPlans();
+          refreshPigeonDetail();
+        } catch(e) { alert("保存失败：" + e.message); }
+      };
+      const history = plan.statusHistory || [];
+      const historyLabels = { planned: "创建/计划中", paired: "已配对", hatched: "已出雏", cancelled: "已取消" };
+      document.querySelector("#planStatusHistory").innerHTML = history.length ? history.map(h =>
+        '<div style="padding:4px 0; border-bottom:1px dashed #eee;">• ' + (historyLabels[h.status] || h.status) + ' · ' + h.at + (h.remark ? ' · 备注：'+h.remark : '') + '</div>'
+      ).join("") : '<div class="meta">暂无记录</div>';
+      const offspringSection = document.querySelector("#planOffspringSection");
+      const offspringActions = document.querySelector("#planOffspringActions");
+      const offspringList = document.querySelector("#planOffspringList");
+      if (plan.status === "hatched") {
+        offspringActions.innerHTML = '<button class="btn-small" id="addOffspringBtn">+ 添加子代</button>';
+        offspringActions.querySelector("#addOffspringBtn").onclick = () => openOffspringModal();
+      } else {
+        offspringActions.innerHTML = '<span class="meta">仅在"已出雏"状态下可以管理子代鸽只</span>';
+      }
+      const offspringDetails = plan.offspringDetails || [];
+      if (offspringDetails.length === 0) {
+        offspringList.innerHTML = '<div class="vaccine-empty">尚未关联子代鸽只</div>';
+      } else {
+        offspringList.innerHTML = offspringDetails.map(o => {
+          const infoParts = [];
+          if (o.owner) infoParts.push('鸽主：' + o.owner);
+          if (o.color) infoParts.push('羽色：' + o.color);
+          if (o.loft) infoParts.push('棚：' + o.loft);
+          const meta = infoParts.length ? ' · ' + infoParts.join(' · ') : (o.exists === false ? ' <span class="meta" style="color:var(--red);">(鸽只不存在)</span>' : "");
+          return '<div style="display:flex; justify-content:space-between; align-items:center; padding:8px 12px; background:#f8fafb; border:1px solid var(--line); border-radius:8px; margin-bottom:8px;"><div><b>'+o.ringNo+'</b>'+meta+'</div>' + (plan.status === "hatched" ? '<button class="btn-small secondary danger" data-unlink-offspring="'+o.ringNo+'">移除</button>' : '') + '</div>';
+        }).join("");
+        offspringList.querySelectorAll("[data-unlink-offspring]").forEach(btn => btn.onclick = async () => {
+          if (!confirm("确定移除此子代的关联？（鸽只本身不会被删除。）")) return;
+          try {
+            const updated = await api('/api/breeding-plans/'+encodeURIComponent(plan.id)+'/offspring', {
+              method:'DELETE',
+              body: JSON.stringify({ ringNo: btn.dataset.unlinkOffspring })
+            });
+            currentBreedingPlan = updated;
+            renderBreedingPlanDetail(updated);
+            loadBreedingPlans();
+            refreshPigeonDetail();
+          } catch(e) { alert("移除失败：" + e.message); }
+        });
+      }
+    }
+    const statusTransitionModal = document.querySelector("#statusTransitionModal");
+    document.querySelector("#closeStatusTransition").onclick = () => {
+      statusTransitionModal.style.display = "none";
+      pendingStatusTransition = null;
+    };
+    function openStatusTransition(toStatus) {
+      if (!currentBreedingPlan) return;
+      pendingStatusTransition = toStatus;
+      const statusText = statusLabels[toStatus] || toStatus;
+      document.querySelector("#statusTransitionTitle").textContent = '变更为「' + statusText + '」';
+      const form = document.querySelector("#statusTransitionForm");
+      form.reset();
+      form.date.value = new Date().toISOString().slice(0, 10);
+      const reasonLabel = document.querySelector("#statusTransitionReasonLabel");
+      const reasonInput = form.cancelReason;
+      if (toStatus === "cancelled") {
+        reasonLabel.style.display = "block";
+        reasonInput.style.display = "block";
+      } else {
+        reasonLabel.style.display = "none";
+        reasonInput.style.display = "none";
+      }
+      statusTransitionModal.style.display = "block";
+    }
+    document.querySelector("#confirmStatusTransition").onclick = async (e) => {
+      e.preventDefault();
+      if (!pendingStatusTransition || !currentBreedingPlan) return;
+      const form = document.querySelector("#statusTransitionForm");
+      const date = form.date.value || new Date().toISOString().slice(0, 10);
+      const remark = form.remark.value || "";
+      const cancelReason = form.cancelReason.value || "";
+      try {
+        const updated = await api('/api/breeding-plans/'+encodeURIComponent(currentBreedingPlan.id)+'/status', {
+          method:'PUT',
+          body: JSON.stringify({ status: pendingStatusTransition, date, remark, cancelReason })
+        });
+        statusTransitionModal.style.display = "none";
+        pendingStatusTransition = null;
+        currentBreedingPlan = updated;
+        renderBreedingPlanDetail(updated);
+        loadBreedingPlans();
+        refreshPigeonDetail();
+      } catch(e) { alert("状态变更失败：" + e.message); }
+    };
+    const offspringModal = document.querySelector("#offspringModal");
+    document.querySelector("#closeOffspringModal").onclick = () => {
+      offspringModal.style.display = "none";
+    };
+    function openOffspringModal() {
+      document.querySelector("#linkOffspringRing").value = "";
+      document.querySelector("#createOffspringRing").value = "";
+      document.querySelector("#createOffspringOwner").value = "";
+      document.querySelector("#createOffspringColor").value = "";
+      document.querySelector("#createOffspringLoft").value = "";
+      setOffspringTab("link");
+      offspringModal.style.display = "block";
+    }
+    function setOffspringTab(tabName) {
+      document.querySelectorAll("#offspringTabBar .race-tab").forEach(tab => {
+        tab.classList.toggle("active", tab.dataset.offspringTab === tabName);
+      });
+      document.querySelector("#offspring-link-tab").style.display = tabName === "link" ? "block" : "none";
+      document.querySelector("#offspring-create-tab").style.display = tabName === "create" ? "block" : "none";
+    }
+    document.querySelectorAll("#offspringTabBar .race-tab").forEach(tab => {
+      tab.onclick = () => setOffspringTab(tab.dataset.offspringTab);
+    });
+    document.querySelector("#confirmLinkOffspring").onclick = async () => {
+      if (!currentBreedingPlan) return;
+      const ringNo = document.querySelector("#linkOffspringRing").value.trim();
+      if (!ringNo) { alert("请输入子代足环号"); return; }
+      try {
+        const updated = await api('/api/breeding-plans/'+encodeURIComponent(currentBreedingPlan.id)+'/offspring', {
+          method:'POST',
+          body: JSON.stringify({ ringNo })
+        });
+        offspringModal.style.display = "none";
+        currentBreedingPlan = updated;
+        renderBreedingPlanDetail(updated);
+        loadBreedingPlans();
+        refreshPigeonDetail();
+      } catch(e) { alert("关联失败：" + e.message); }
+    };
+    document.querySelector("#confirmCreateOffspring").onclick = async () => {
+      if (!currentBreedingPlan) return;
+      const ringNo = document.querySelector("#createOffspringRing").value.trim();
+      const owner = document.querySelector("#createOffspringOwner").value.trim();
+      const color = document.querySelector("#createOffspringColor").value.trim();
+      const loft = document.querySelector("#createOffspringLoft").value.trim();
+      const errors = [];
+      if (!ringNo) errors.push("足环号");
+      if (!owner) errors.push("鸽主");
+      if (!color) errors.push("羽色");
+      if (!loft) errors.push("棚号");
+      if (errors.length) { alert("请填写：" + errors.join("、")); return; }
+      try {
+        const result = await api('/api/breeding-plans/'+encodeURIComponent(currentBreedingPlan.id)+'/offspring/create', {
+          method:'POST',
+          body: JSON.stringify({ ringNo, owner, color, loft })
+        });
+        offspringModal.style.display = "none";
+        currentBreedingPlan = result.plan;
+        renderBreedingPlanDetail(result.plan);
+        loadBreedingPlans();
+        load();
+        refreshPigeonDetail();
+      } catch(e) { alert("创建失败：" + e.message); }
+    };
     breedingForm.onsubmit = async event => {
       event.preventDefault();
       const formData = new FormData(breedingForm);
@@ -1307,12 +1725,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         await api("/api/breeding-plans", { method:"POST", body: JSON.stringify({ fatherRing, motherRing, planDate, remark }) });
         breedingForm.reset();
         loadBreedingPlans();
-        if (currentRingNo) {
-          try {
-            const data = await api('/api/pigeons/'+encodeURIComponent(currentRingNo)+'/relation');
-            renderRelation(data);
-          } catch(e) {}
-        }
+        refreshPigeonDetail();
         alert("配对计划创建成功！");
       } catch(e) {
         alert("创建失败：" + e.message);
@@ -2287,7 +2700,14 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { success: successRows.length, failed: failedRows.length, successRows, failedRows });
     }
     if (req.method === "GET" && url.pathname === "/api/breeding-plans") {
-      return sendJson(res, 200, db.breedingPlans);
+      const enriched = db.breedingPlans.map(plan => {
+        const offspringDetails = (plan.offspring || []).map(ring => {
+          const p = db.pigeons.find(item => item.ringNo === ring);
+          return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo, exists: false };
+        });
+        return { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] || plan.status };
+      });
+      return sendJson(res, 200, enriched);
     }
     if (req.method === "POST" && url.pathname === "/api/breeding-plans") {
       const input = await body(req);
@@ -2297,19 +2717,60 @@ const server = http.createServer(async (req, res) => {
       if (errors.length > 0) {
         return sendJson(res, 400, { error: errors.join("、"), errors });
       }
+      const today = new Date().toISOString().slice(0, 10);
       const plan = {
         id: Date.now().toString(),
         fatherRing,
         motherRing,
-        planDate: input.planDate || new Date().toISOString().slice(0, 10),
+        planDate: input.planDate || today,
         remark: input.remark || "",
-        createdAt: new Date().toISOString().slice(0, 10)
+        status: BREEDING_STATUSES.PLANNED,
+        statusHistory: [{ status: BREEDING_STATUSES.PLANNED, at: today }],
+        offspring: [],
+        pairedAt: null,
+        hatchedAt: null,
+        cancelledAt: null,
+        cancelReason: "",
+        createdAt: today
       };
       db.breedingPlans.unshift(plan);
       await saveDb(db);
-      return sendJson(res, 201, plan);
+      const offspringDetails = [];
+      return sendJson(res, 201, { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] });
     }
-    const breedingPlanMatch = url.pathname.match(/^\/api\/breeding-plans\/(.+)$/);
+    const breedingStatusMetaMatch = url.pathname === "/api/breeding-plans/status-meta";
+    if (req.method === "GET" && breedingStatusMetaMatch) {
+      return sendJson(res, 200, {
+        statuses: BREEDING_STATUSES,
+        labels: BREEDING_STATUS_LABELS,
+        transitions: BREEDING_STATUS_TRANSITIONS
+      });
+    }
+    const breedingPlanMatch = url.pathname.match(/^\/api\/breeding-plans\/([^/]+)$/);
+    if (breedingPlanMatch && req.method === "GET") {
+      const planId = decodeURIComponent(breedingPlanMatch[1]);
+      const plan = db.breedingPlans.find(p => p.id === planId);
+      if (!plan) return sendJson(res, 404, { error: "plan_not_found" });
+      const offspringDetails = (plan.offspring || []).map(ring => {
+        const p = db.pigeons.find(item => item.ringNo === ring);
+        return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo, exists: false };
+      });
+      return sendJson(res, 200, { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] || plan.status });
+    }
+    if (breedingPlanMatch && req.method === "PUT") {
+      const planId = decodeURIComponent(breedingPlanMatch[1]);
+      const plan = db.breedingPlans.find(p => p.id === planId);
+      if (!plan) return sendJson(res, 404, { error: "plan_not_found" });
+      const input = await body(req);
+      if (input.remark !== undefined) plan.remark = input.remark;
+      if (input.planDate !== undefined) plan.planDate = input.planDate || plan.planDate;
+      await saveDb(db);
+      const offspringDetails = (plan.offspring || []).map(ring => {
+        const p = db.pigeons.find(item => item.ringNo === ring);
+        return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo, exists: false };
+      });
+      return sendJson(res, 200, { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] || plan.status });
+    }
     if (breedingPlanMatch && req.method === "DELETE") {
       const planId = decodeURIComponent(breedingPlanMatch[1]);
       const index = db.breedingPlans.findIndex(p => p.id === planId);
@@ -2317,6 +2778,126 @@ const server = http.createServer(async (req, res) => {
       db.breedingPlans.splice(index, 1);
       await saveDb(db);
       return sendJson(res, 200, { success: true });
+    }
+    const statusTransitionMatch = url.pathname.match(/^\/api\/breeding-plans\/([^/]+)\/status$/);
+    if (statusTransitionMatch && req.method === "PUT") {
+      const planId = decodeURIComponent(statusTransitionMatch[1]);
+      const plan = db.breedingPlans.find(p => p.id === planId);
+      if (!plan) return sendJson(res, 404, { error: "plan_not_found" });
+      const input = await body(req);
+      const nextStatus = input.status;
+      if (!nextStatus || !Object.values(BREEDING_STATUSES).includes(nextStatus)) {
+        return sendJson(res, 400, { error: "无效的状态值" });
+      }
+      if (!canTransitionStatus(plan.status, nextStatus)) {
+        return sendJson(res, 400, { error: `无法从"${BREEDING_STATUS_LABELS[plan.status]}"状态转换到"${BREEDING_STATUS_LABELS[nextStatus]}"状态` });
+      }
+      const today = new Date().toISOString().slice(0, 10);
+      plan.status = nextStatus;
+      plan.statusHistory = plan.statusHistory || [];
+      plan.statusHistory.push({ status: nextStatus, at: today, remark: input.remark || "" });
+      if (nextStatus === BREEDING_STATUSES.PAIRED) plan.pairedAt = input.date || today;
+      if (nextStatus === BREEDING_STATUSES.HATCHED) plan.hatchedAt = input.date || today;
+      if (nextStatus === BREEDING_STATUSES.CANCELLED) {
+        plan.cancelledAt = input.date || today;
+        plan.cancelReason = input.cancelReason || "";
+      }
+      await saveDb(db);
+      const offspringDetails = (plan.offspring || []).map(ring => {
+        const p = db.pigeons.find(item => item.ringNo === ring);
+        return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo, exists: false };
+      });
+      return sendJson(res, 200, { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] });
+    }
+    const offspringLinkMatch = url.pathname.match(/^\/api\/breeding-plans\/([^/]+)\/offspring$/);
+    if (offspringLinkMatch && req.method === "POST") {
+      const planId = decodeURIComponent(offspringLinkMatch[1]);
+      const plan = db.breedingPlans.find(p => p.id === planId);
+      if (!plan) return sendJson(res, 404, { error: "plan_not_found" });
+      if (plan.status !== BREEDING_STATUSES.HATCHED) {
+        return sendJson(res, 400, { error: "仅已出雏状态的计划可以关联子代" });
+      }
+      const input = await body(req);
+      const offspringRing = (input.ringNo || "").trim();
+      const errors = validateOffspringAgainstParents(db, plan.fatherRing, plan.motherRing, offspringRing);
+      if (errors.length > 0) {
+        return sendJson(res, 400, { error: errors.join("、"), errors });
+      }
+      if (!db.pigeons.some(p => p.ringNo === offspringRing)) {
+        return sendJson(res, 400, { error: "子代足环号不存在，请先创建鸽只" });
+      }
+      if (!plan.offspring.includes(offspringRing)) {
+        plan.offspring.push(offspringRing);
+        const offspring = db.pigeons.find(p => p.ringNo === offspringRing);
+        if (!offspring.fatherRing) offspring.fatherRing = plan.fatherRing;
+        if (!offspring.motherRing) offspring.motherRing = plan.motherRing;
+      }
+      await saveDb(db);
+      const offspringDetails = (plan.offspring || []).map(ring => {
+        const p = db.pigeons.find(item => item.ringNo === ring);
+        return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo, exists: false };
+      });
+      return sendJson(res, 200, { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] });
+    }
+    if (offspringLinkMatch && req.method === "DELETE") {
+      const planId = decodeURIComponent(offspringLinkMatch[1]);
+      const plan = db.breedingPlans.find(p => p.id === planId);
+      if (!plan) return sendJson(res, 404, { error: "plan_not_found" });
+      const input = await body(req);
+      const offspringRing = (input.ringNo || "").trim();
+      const idx = plan.offspring.indexOf(offspringRing);
+      if (idx === -1) return sendJson(res, 404, { error: "子代未关联到此计划" });
+      plan.offspring.splice(idx, 1);
+      await saveDb(db);
+      const offspringDetails = (plan.offspring || []).map(ring => {
+        const p = db.pigeons.find(item => item.ringNo === ring);
+        return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo, exists: false };
+      });
+      return sendJson(res, 200, { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] });
+    }
+    const offspringCreateMatch = url.pathname.match(/^\/api\/breeding-plans\/([^/]+)\/offspring\/create$/);
+    if (offspringCreateMatch && req.method === "POST") {
+      const planId = decodeURIComponent(offspringCreateMatch[1]);
+      const plan = db.breedingPlans.find(p => p.id === planId);
+      if (!plan) return sendJson(res, 404, { error: "plan_not_found" });
+      if (plan.status !== BREEDING_STATUSES.HATCHED) {
+        return sendJson(res, 400, { error: "仅已出雏状态的计划可以创建子代" });
+      }
+      const input = await body(req);
+      const pigeonData = {
+        ringNo: (input.ringNo || "").trim(),
+        owner: (input.owner || "").trim(),
+        color: (input.color || "").trim(),
+        loft: (input.loft || "").trim()
+      };
+      const errors = validateNewOffspringPigeon(db, pigeonData, plan.fatherRing, plan.motherRing);
+      if (errors.length > 0) {
+        return sendJson(res, 400, { error: errors.join("、"), errors });
+      }
+      const newPigeon = {
+        ringNo: pigeonData.ringNo,
+        owner: pigeonData.owner,
+        fatherRing: plan.fatherRing,
+        motherRing: plan.motherRing,
+        color: pigeonData.color,
+        loft: pigeonData.loft,
+        vaccines: [],
+        transfers: [],
+        races: []
+      };
+      db.pigeons.unshift(newPigeon);
+      if (!plan.offspring.includes(newPigeon.ringNo)) {
+        plan.offspring.push(newPigeon.ringNo);
+      }
+      await saveDb(db);
+      const offspringDetails = (plan.offspring || []).map(ring => {
+        const p = db.pigeons.find(item => item.ringNo === ring);
+        return p ? { ringNo: p.ringNo, owner: p.owner, color: p.color, loft: p.loft } : { ringNo, exists: false };
+      });
+      return sendJson(res, 201, {
+        pigeon: newPigeon,
+        plan: { ...plan, offspringDetails, statusLabel: BREEDING_STATUS_LABELS[plan.status] }
+      });
     }
     const pigeonPlansMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/breeding-plans$/);
     if (pigeonPlansMatch && req.method === "GET") {
