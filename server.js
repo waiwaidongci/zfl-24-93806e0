@@ -239,6 +239,221 @@ function validateBreedingPlan(db, fatherRing, motherRing) {
   }
   return errors;
 }
+function validateBackupData(data) {
+  const details = [];
+  if (!data || typeof data !== "object") {
+    return { valid: false, message: "数据格式错误，应为JSON对象", details: ["根节点必须是对象"] };
+  }
+  if (!Array.isArray(data.pigeons)) {
+    details.push("缺少 pigeons 数组");
+  }
+  if (data.breedingPlans !== undefined && !Array.isArray(data.breedingPlans)) {
+    details.push("breedingPlans 必须是数组");
+  }
+  if (data.raceEvents !== undefined && !Array.isArray(data.raceEvents)) {
+    details.push("raceEvents 必须是数组");
+  }
+  if (details.length > 0) {
+    return { valid: false, message: "数据结构不完整或格式错误", details };
+  }
+  let hasValidPigeon = false;
+  data.pigeons.forEach((p, idx) => {
+    if (p && typeof p === "object" && p.ringNo && p.owner) {
+      hasValidPigeon = true;
+    }
+  });
+  if (!hasValidPigeon && data.pigeons.length > 0) {
+    details.push("备份数据中没有有效的鸽只记录");
+    return { valid: false, message: "数据格式错误", details };
+  }
+  return { valid: true, message: "数据结构验证通过", details: [] };
+}
+function analyzeBackupData(currentDb, backupData) {
+  const result = {
+    summary: {
+      pigeons: backupData.pigeons.length,
+      breedingPlans: (backupData.breedingPlans || []).length,
+      raceEvents: (backupData.raceEvents || []).length,
+      currentPigeons: currentDb.pigeons.length,
+      currentBreedingPlans: currentDb.breedingPlans.length,
+      currentRaceEvents: currentDb.raceEvents.length
+    },
+    ringConflicts: [],
+    missingFields: [],
+    duplicateRingsInBackup: []
+  };
+  const currentRings = new Set(currentDb.pigeons.map(p => p.ringNo));
+  const backupRingMap = new Map();
+  const pigeonRequired = ["ringNo", "owner", "color", "loft"];
+  const pigeonFieldLabels = { ringNo: "足环号", owner: "鸽主", color: "羽色", loft: "棚号" };
+  backupData.pigeons.forEach((p, idx) => {
+    if (!p || typeof p !== "object") return;
+    if (p.ringNo) {
+      if (backupRingMap.has(p.ringNo)) {
+        result.duplicateRingsInBackup.push({
+          ringNo: p.ringNo,
+          index: idx + 1,
+          firstIndex: backupRingMap.get(p.ringNo) + 1
+        });
+      } else {
+        backupRingMap.set(p.ringNo, idx);
+      }
+      if (currentRings.has(p.ringNo)) {
+        const currentPigeon = currentDb.pigeons.find(cp => cp.ringNo === p.ringNo);
+        result.ringConflicts.push({
+          ringNo: p.ringNo,
+          index: idx + 1,
+          current: {
+            owner: currentPigeon.owner,
+            color: currentPigeon.color,
+            loft: currentPigeon.loft
+          },
+          backup: {
+            owner: p.owner,
+            color: p.color,
+            loft: p.loft
+          }
+        });
+      }
+    }
+    const missing = [];
+    pigeonRequired.forEach(f => {
+      if (!p[f] || (typeof p[f] === "string" && p[f].trim() === "")) {
+        missing.push(pigeonFieldLabels[f]);
+      }
+    });
+    if (missing.length > 0) {
+      result.missingFields.push({
+        ringNo: p.ringNo || "(无足环号)",
+        index: idx + 1,
+        missingFields: missing
+      });
+    }
+  });
+  return result;
+}
+async function restoreBackupData(currentDb, backupData, mode) {
+  const result = {
+    success: true,
+    mode: mode,
+    added: { pigeons: 0, breedingPlans: 0, raceEvents: 0 },
+    updated: { pigeons: 0, breedingPlans: 0, raceEvents: 0 },
+    skipped: { pigeons: 0, breedingPlans: 0, raceEvents: 0 },
+    errors: []
+  };
+  const backup = {
+    pigeons: backupData.pigeons || [],
+    breedingPlans: backupData.breedingPlans || [],
+    raceEvents: backupData.raceEvents || []
+  };
+  const requiredFields = ["ringNo", "owner", "color", "loft"];
+  function isValidPigeon(p) {
+    return p && typeof p === "object" && requiredFields.every(f => p[f] && typeof p[f] === "string" && p[f].trim() !== "");
+  }
+  if (mode === "overwrite") {
+    currentDb.pigeons = [];
+    currentDb.breedingPlans = [];
+    currentDb.raceEvents = [];
+    backup.pigeons.forEach(p => {
+      if (!isValidPigeon(p)) {
+        result.skipped.pigeons++;
+        result.errors.push("跳过鸽只 " + (p.ringNo || "(无足环号)") + "：缺少必填字段");
+        return;
+      }
+      currentDb.pigeons.push({
+        ringNo: p.ringNo,
+        owner: p.owner,
+        fatherRing: p.fatherRing || "",
+        motherRing: p.motherRing || "",
+        color: p.color,
+        loft: p.loft,
+        vaccines: p.vaccines || [],
+        transfers: p.transfers || [],
+        races: p.races || []
+      });
+      result.added.pigeons++;
+    });
+    backup.breedingPlans.forEach(p => {
+      currentDb.breedingPlans.push({ ...p });
+      result.added.breedingPlans++;
+    });
+    backup.raceEvents.forEach(e => {
+      currentDb.raceEvents.push({ ...e });
+      result.added.raceEvents++;
+    });
+  } else {
+    const currentRingMap = new Map(currentDb.pigeons.map((p, i) => [p.ringNo, i]));
+    const currentPlanMap = new Map(currentDb.breedingPlans.map((p, i) => [p.id, i]));
+    const currentEventMap = new Map(currentDb.raceEvents.map((e, i) => [e.id, i]));
+    const updateList = [];
+    const addList = [];
+    backup.pigeons.forEach(p => {
+      if (!isValidPigeon(p)) {
+        result.skipped.pigeons++;
+        result.errors.push("跳过鸽只 " + (p.ringNo || "(无足环号)") + "：缺少必填字段");
+        return;
+      }
+      if (currentRingMap.has(p.ringNo)) {
+        updateList.push(p);
+      } else {
+        addList.push(p);
+      }
+    });
+    updateList.forEach(p => {
+      const idx = currentRingMap.get(p.ringNo);
+      currentDb.pigeons[idx] = {
+        ...currentDb.pigeons[idx],
+        owner: p.owner,
+        fatherRing: p.fatherRing || currentDb.pigeons[idx].fatherRing || "",
+        motherRing: p.motherRing || currentDb.pigeons[idx].motherRing || "",
+        color: p.color,
+        loft: p.loft,
+        vaccines: p.vaccines || currentDb.pigeons[idx].vaccines || [],
+        transfers: p.transfers || currentDb.pigeons[idx].transfers || [],
+        races: p.races || currentDb.pigeons[idx].races || []
+      };
+      result.updated.pigeons++;
+    });
+    addList.forEach(p => {
+      currentDb.pigeons.unshift({
+        ringNo: p.ringNo,
+        owner: p.owner,
+        fatherRing: p.fatherRing || "",
+        motherRing: p.motherRing || "",
+        color: p.color,
+        loft: p.loft,
+        vaccines: p.vaccines || [],
+        transfers: p.transfers || [],
+        races: p.races || []
+      });
+      result.added.pigeons++;
+    });
+    backup.breedingPlans.forEach(p => {
+      if (p.id && currentPlanMap.has(p.id)) {
+        const idx = currentPlanMap.get(p.id);
+        currentDb.breedingPlans[idx] = { ...currentDb.breedingPlans[idx], ...p };
+        result.updated.breedingPlans++;
+      } else {
+        const newPlan = { id: p.id || Date.now().toString() + Math.random().toString(36).slice(2, 6), ...p };
+        currentDb.breedingPlans.unshift(newPlan);
+        result.added.breedingPlans++;
+      }
+    });
+    backup.raceEvents.forEach(e => {
+      if (e.id && currentEventMap.has(e.id)) {
+        const idx = currentEventMap.get(e.id);
+        currentDb.raceEvents[idx] = { ...currentDb.raceEvents[idx], ...e };
+        result.updated.raceEvents++;
+      } else {
+        const newEvent = { id: e.id || Date.now().toString() + Math.random().toString(36).slice(2, 6), results: [], ...e };
+        currentDb.raceEvents.unshift(newEvent);
+        result.added.raceEvents++;
+      }
+    });
+  }
+  await saveDb(currentDb);
+  return result;
+}
 
 function getPigeonBreedingPlans(db, ringNo) {
   return db.breedingPlans.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
@@ -421,7 +636,7 @@ const page = `<!doctype html>
   </style>
 </head>
 <body>
-  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="reload">刷新</button></div></header>
+  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
   <main>
     <form id="form">
       <h2>创建鸽只档案</h2>
@@ -660,6 +875,65 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
             <div class="pedigree-legend-item"><div class="legend-box missing"></div><span>未登记</span></div>
             <div class="pedigree-legend-item"><div class="legend-box circular"></div><span>循环血统（已停止展开）</span></div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="backupModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal" style="max-width:1000px;">
+        <div class="modal-header">
+          <h2>数据备份与恢复</h2>
+          <button id="closeBackup" class="secondary">关闭</button>
+        </div>
+        <div class="race-tabs">
+          <div class="race-tab active" data-backup-tab="export">导出备份</div>
+          <div class="race-tab" data-backup-tab="restore">恢复数据</div>
+        </div>
+        <div class="race-tab-content active" id="backup-tab-export">
+          <div class="panel" style="margin-top:12px;">
+            <h3>导出当前数据为JSON文件</h3>
+            <p class="hint" style="margin-top:8px;">点击下方按钮将所有鸽只档案、配对计划和赛事成绩导出为JSON备份文件。</p>
+            <div id="exportStats" class="import-stats" style="margin-top:16px;">
+              <div class="stat"><div class="num" id="exportPigeonCount">0</div><div class="lbl">鸽只档案</div></div>
+              <div class="stat"><div class="num" id="exportPlanCount">0</div><div class="lbl">配对计划</div></div>
+              <div class="stat"><div class="num" id="exportEventCount">0</div><div class="lbl">赛事记录</div></div>
+              <div class="stat"><div class="num" id="exportDate">-</div><div class="lbl">导出日期</div></div>
+            </div>
+            <div style="margin-top:16px; display:flex; gap:10px;">
+              <button id="doExportBtn">导出JSON文件</button>
+              <button id="refreshExportBtn" class="secondary">刷新统计</button>
+            </div>
+          </div>
+        </div>
+        <div class="race-tab-content" id="backup-tab-restore">
+          <div class="panel" style="margin-top:12px;">
+            <h3>从JSON文件恢复数据</h3>
+            <div style="margin-top:12px;">
+              <label>选择JSON文件</label>
+              <input type="file" id="restoreFileInput" accept=".json,application/json" style="width:100%; padding:8px; border:1px solid var(--line); border-radius:6px;">
+              <div style="margin:12px 0; text-align:center; color:var(--muted);">或</div>
+              <label>粘贴JSON内容</label>
+              <textarea id="restoreJsonInput" class="csv-input" placeholder="粘贴备份JSON内容，例如：{pigeons: [...], breedingPlans: [...], raceEvents: [...]}"></textarea>
+            </div>
+            <div class="hint" style="margin-top:8px;">
+              恢复模式说明：<br>
+              <b>合并模式</b>：保留现有数据，备份中存在的相同足环号记录将被更新，新记录将被添加。<br>
+              <b>覆盖模式</b>：清空现有所有数据，完全替换为备份中的数据。此操作不可恢复！
+            </div>
+            <div style="margin-top:16px;">
+              <label>恢复模式</label>
+              <select id="restoreMode">
+                <option value="merge">合并模式（推荐）- 更新冲突记录，添加新记录</option>
+                <option value="overwrite">覆盖模式 - 清空现有数据，完全替换</option>
+              </select>
+            </div>
+            <div style="margin-top:16px; display:flex; gap:10px;">
+              <button id="previewRestoreBtn">预览恢复结果</button>
+              <button id="clearRestoreBtn" class="secondary">清空</button>
+            </div>
+          </div>
+          <div id="restorePreviewArea" style="margin-top:18px;"></div>
         </div>
       </div>
     </div>
@@ -1507,6 +1781,246 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     pedigreeSearch.addEventListener("keydown", (e) => {
       if (e.key === "Enter") document.querySelector("#pedigreeSearchBtn").click();
     });
+    const backupModal = document.querySelector("#backupModal");
+    const restoreFileInput = document.querySelector("#restoreFileInput");
+    const restoreJsonInput = document.querySelector("#restoreJsonInput");
+    const restorePreviewArea = document.querySelector("#restorePreviewArea");
+    const restoreMode = document.querySelector("#restoreMode");
+    let restorePreviewData = null;
+    let restoreData = null;
+    function setBackupTab(tabName) {
+      document.querySelectorAll("[data-backup-tab]").forEach(tab => {
+        tab.classList.toggle("active", tab.dataset.backupTab === tabName);
+      });
+      document.querySelectorAll("#backupModal .race-tab-content").forEach(content => {
+        content.classList.toggle("active", content.id === "backup-tab-" + tabName);
+      });
+    }
+    document.querySelectorAll("[data-backup-tab]").forEach(tab => {
+      tab.onclick = () => setBackupTab(tab.dataset.backupTab);
+    });
+    document.querySelector("#backupBtn").onclick = async () => {
+      backupModal.style.display = "block";
+      restorePreviewArea.innerHTML = "";
+      restoreFileInput.value = "";
+      restoreJsonInput.value = "";
+      restorePreviewData = null;
+      restoreData = null;
+      await refreshExportStats();
+      setBackupTab("export");
+    };
+    document.querySelector("#closeBackup").onclick = () => {
+      backupModal.style.display = "none";
+    };
+    async function refreshExportStats() {
+      try {
+        const data = await api("/api/pigeons");
+        const plans = await api("/api/breeding-plans");
+        const events = await api("/api/race-events");
+        document.querySelector("#exportPigeonCount").textContent = data.length;
+        document.querySelector("#exportPlanCount").textContent = plans.length;
+        document.querySelector("#exportEventCount").textContent = events.length;
+        document.querySelector("#exportDate").textContent = new Date().toISOString().slice(0, 10);
+      } catch(e) {
+        console.error("刷新统计失败", e);
+      }
+    }
+    document.querySelector("#refreshExportBtn").onclick = refreshExportStats;
+    document.querySelector("#doExportBtn").onclick = async () => {
+      try {
+        const btn = document.querySelector("#doExportBtn");
+        btn.disabled = true;
+        btn.textContent = "导出中...";
+        const res = await fetch("/api/backup/export");
+        if (!res.ok) throw new Error("导出失败");
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const filename = res.headers.get("Content-Disposition")?.match(/filename="(.+)"/)?.[1] || "pigeon-backup-" + new Date().toISOString().slice(0,10) + ".json";
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        await refreshExportStats();
+        alert("导出成功！");
+      } catch(e) {
+        alert("导出失败：" + e.message);
+      } finally {
+        const btn = document.querySelector("#doExportBtn");
+        btn.disabled = false;
+        btn.textContent = "导出JSON文件";
+      }
+    };
+    document.querySelector("#clearRestoreBtn").onclick = () => {
+      restoreFileInput.value = "";
+      restoreJsonInput.value = "";
+      restorePreviewArea.innerHTML = "";
+      restorePreviewData = null;
+      restoreData = null;
+    };
+    restoreFileInput.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        restoreJsonInput.value = evt.target.result;
+      };
+      reader.onerror = () => {
+        alert("文件读取失败");
+      };
+      reader.readAsText(file);
+    };
+    document.querySelector("#previewRestoreBtn").onclick = async () => {
+      const jsonText = restoreJsonInput.value.trim();
+      if (!jsonText) {
+        alert("请选择JSON文件或粘贴JSON内容");
+        return;
+      }
+      let parsedData;
+      try {
+        parsedData = JSON.parse(jsonText);
+      } catch(e) {
+        restorePreviewArea.innerHTML = '<div class="hint" style="color:var(--red); margin-top:12px;">JSON解析失败：' + e.message + '<br>请检查JSON格式是否正确。</div>';
+        return;
+      }
+      restoreData = parsedData;
+      try {
+        const preview = await api("/api/backup/restore-preview", {
+          method: "POST",
+          body: JSON.stringify({ data: parsedData })
+        });
+        restorePreviewData = preview;
+        renderRestorePreview(preview);
+      } catch(e) {
+        if (e.message.includes("invalid_json") || e.message.includes("invalid_structure")) {
+          restorePreviewArea.innerHTML = '<div class="hint" style="color:var(--red); margin-top:12px;">数据结构验证失败：' + e.message + '</div>';
+        } else {
+          restorePreviewArea.innerHTML = '<div class="hint" style="color:var(--red); margin-top:12px;">预览失败：' + e.message + '</div>';
+        }
+      }
+    };
+    function renderRestorePreview(preview) {
+      const s = preview.summary;
+      const mode = restoreMode.value;
+      const statsHtml = '<div class="import-stats">' +
+        '<div class="stat"><div class="num">' + s.pigeons + '</div><div class="lbl">备份鸽只</div></div>' +
+        '<div class="stat"><div class="num">' + s.breedingPlans + '</div><div class="lbl">备份配对</div></div>' +
+        '<div class="stat"><div class="num">' + s.raceEvents + '</div><div class="lbl">备份赛事</div></div>' +
+        '<div class="stat warn"><div class="num">' + s.currentPigeons + '</div><div class="lbl">现有鸽只</div></div>' +
+        '</div>';
+      let conflictHtml = "";
+      if (preview.ringConflicts.length > 0) {
+        const items = preview.ringConflicts.slice(0, 20).map(c => {
+          const changed = [];
+          if (c.current.owner !== c.backup.owner) changed.push("鸽主: " + c.current.owner + " → " + c.backup.owner);
+          if (c.current.color !== c.backup.color) changed.push("羽色: " + c.current.color + " → " + c.backup.color);
+          if (c.current.loft !== c.backup.loft) changed.push("棚号: " + c.current.loft + " → " + c.backup.loft);
+          const changeText = changed.length > 0 ? changed.join(" | ") : "数据无变化";
+          return '<div class=duplicate-item><b>' + c.ringNo + '</b><br><span class=meta>' + changeText + '</span></div>';
+        }).join("");
+        const more = preview.ringConflicts.length > 20 ? '<div class=hint style=margin-top:6px;>... 还有 ' + (preview.ringConflicts.length - 20) + ' 条冲突记录</div>' : "";
+        conflictHtml = '<div class=duplicate-warn><h4>⚠ 足环号冲突（' + preview.ringConflicts.length + ' 条）</h4>' +
+          '<div style=font-size:13px;margin-bottom:8px;>以下足环号在当前数据库中已存在' + (mode === "overwrite" ? "，将被覆盖。" : "，合并模式下将被更新。") + '</div>' +
+          items + more + '</div>';
+      }
+      let missingHtml = "";
+      if (preview.missingFields.length > 0) {
+        const items = preview.missingFields.slice(0, 20).map(m => {
+          return '<div class=failed-item><b>第' + m.index + '条</b> · ' + m.ringNo + '：缺少字段 ' + m.missingFields.join("、") + '</div>';
+        }).join("");
+        const more = preview.missingFields.length > 20 ? '<div class=hint style=margin-top:6px;>... 还有 ' + (preview.missingFields.length - 20) + ' 条缺字段记录</div>' : "";
+        missingHtml = '<div class=duplicate-warn style=background:#fff5f5;border-color:#f5c2be;><h4 style=color:var(--red);>⚠ 缺少必填字段（' + preview.missingFields.length + ' 条）</h4>' +
+          '<div style=font-size:13px;margin-bottom:8px;>以下记录缺少必填字段，恢复时将被跳过。</div>' +
+          items + more + '</div>';
+      }
+      let dupBackupHtml = "";
+      if (preview.duplicateRingsInBackup.length > 0) {
+        const items = preview.duplicateRingsInBackup.slice(0, 20).map(d => {
+          return '<div class=duplicate-item><b>' + d.ringNo + '</b>：第 ' + d.firstIndex + ' 条和第 ' + d.index + ' 条重复</div>';
+        }).join("");
+        const more = preview.duplicateRingsInBackup.length > 20 ? '<div class=hint style=margin-top:6px;>... 还有 ' + (preview.duplicateRingsInBackup.length - 20) + ' 条重复记录</div>' : "";
+        dupBackupHtml = '<div class=duplicate-warn><h4 style=color:var(--yellow);>⚠ 备份文件内重复（' + preview.duplicateRingsInBackup.length + ' 条）</h4>' +
+          '<div style=font-size:13px;margin-bottom:8px;>备份文件中存在重复的足环号。</div>' +
+          items + more + '</div>';
+      }
+      const canRestore = true;
+      const modeLabel = mode === "overwrite" ? "覆盖模式（将清空现有数据）" : "合并模式（更新冲突记录）";
+      const warnColor = mode === "overwrite" ? "var(--red)" : "var(--yellow)";
+      const missingCount = preview.missingFields.length;
+      const hintText = missingCount > 0 
+        ? '恢复模式：<b style=color:' + warnColor + ';>' + modeLabel + '</b><br><span style=color:var(--red);>注意：' + missingCount + ' 条记录因缺少必填字段将被跳过</span>'
+        : '恢复模式：<b style=color:' + warnColor + ';>' + modeLabel + '</b>';
+      const actionsHtml = '<div class="modal-actions">' +
+        '<div class="hint">' + hintText + '</div>' +
+        '<div style=display:flex; gap:8px;>' +
+        '<button id="cancelRestoreBtn" class="secondary">取消</button>' +
+        '<button id="confirmRestoreBtn" style="' + (mode === "overwrite" ? 'background:var(--red);' : '') + '">确认恢复</button>' +
+        '</div></div>';
+      restorePreviewArea.innerHTML = statsHtml + conflictHtml + missingHtml + dupBackupHtml + actionsHtml;
+      document.querySelector("#cancelRestoreBtn").onclick = () => {
+        restorePreviewArea.innerHTML = "";
+        restorePreviewData = null;
+      };
+      document.querySelector("#confirmRestoreBtn").onclick = doRestore;
+    }
+    async function doRestore() {
+      if (!restoreData) return;
+      const mode = restoreMode.value;
+      if (mode === "overwrite") {
+        if (!confirm("警告：覆盖模式将清空所有现有数据并完全替换为备份数据！此操作不可恢复。\\n\\n确定要继续吗？")) return;
+        if (!confirm("请再次确认：所有现有鸽只档案、配对计划和赛事成绩将被删除并替换。\\n\\n真的要继续吗？")) return;
+      } else {
+        if (restorePreviewData && restorePreviewData.ringConflicts.length > 0) {
+          if (!confirm("合并模式下，现有 " + restorePreviewData.ringConflicts.length + " 条冲突记录将被备份数据覆盖。\\n\\n确定继续吗？")) return;
+        }
+      }
+      const btn = document.querySelector("#confirmRestoreBtn");
+      btn.disabled = true;
+      btn.textContent = "恢复中...";
+      try {
+        const result = await api("/api/backup/restore-commit", {
+          method: "POST",
+          body: JSON.stringify({ data: restoreData, mode: mode })
+        });
+        renderRestoreResult(result);
+      } catch(e) {
+        alert("恢复失败：" + e.message);
+        btn.disabled = false;
+        btn.textContent = "确认恢复";
+      }
+    }
+    function renderRestoreResult(result) {
+      const statsHtml = '<div class=import-stats>' +
+        '<div class="stat good"><div class=num>' + result.added.pigeons + '</div><div class=lbl>新增鸽只</div></div>' +
+        '<div class="stat warn"><div class=num>' + result.updated.pigeons + '</div><div class=lbl>更新鸽只</div></div>' +
+        '<div class=stat><div class=num>' + result.added.breedingPlans + '</div><div class=lbl>配对计划</div></div>' +
+        '<div class=stat><div class=num>' + result.added.raceEvents + '</div><div class=lbl>赛事记录</div></div>' +
+        '</div>';
+      const totalChanges = result.added.pigeons + result.updated.pigeons + result.added.breedingPlans + result.added.raceEvents + result.updated.breedingPlans + result.updated.raceEvents;
+      const resultHtml = '<div class=result-summary>' +
+        '<h3 style=color:var(--green);>✓ 恢复成功！</h3>' +
+        '<p class=hint>模式：' + (result.mode === "overwrite" ? "覆盖模式" : "合并模式") + '<br>' +
+        '共处理 ' + totalChanges + ' 条记录</p>' +
+        '<div style=margin-top:10px;>' +
+        (result.added.pigeons > 0 ? '<div class=success-item>新增鸽只档案：' + result.added.pigeons + ' 条</div>' : '') +
+        (result.updated.pigeons > 0 ? '<div class=success-item>更新鸽只档案：' + result.updated.pigeons + ' 条</div>' : '') +
+        (result.added.breedingPlans > 0 ? '<div class=success-item>新增配对计划：' + result.added.breedingPlans + ' 条</div>' : '') +
+        (result.updated.breedingPlans > 0 ? '<div class=success-item>更新配对计划：' + result.updated.breedingPlans + ' 条</div>' : '') +
+        (result.added.raceEvents > 0 ? '<div class=success-item>新增赛事记录：' + result.added.raceEvents + ' 条</div>' : '') +
+        (result.updated.raceEvents > 0 ? '<div class=success-item>更新赛事记录：' + result.updated.raceEvents + ' 条</div>' : '') +
+        '</div></div>';
+      const actionsHtml = '<div class=modal-actions>' +
+        '<div class=hint>恢复完成，点击关闭返回主页面。</div>' +
+        '<button id=restoreDoneBtn>关闭</button>' +
+        '</div>';
+      restorePreviewArea.innerHTML = statsHtml + resultHtml + actionsHtml;
+      document.querySelector("#restoreDoneBtn").onclick = () => {
+        backupModal.style.display = "none";
+        load();
+      };
+    }
     load();
   </script>
 </body>
@@ -1794,6 +2308,63 @@ const server = http.createServer(async (req, res) => {
       if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
       const results = getPigeonRaceResults(db, ringNo);
       return sendJson(res, 200, results);
+    }
+    if (req.method === "GET" && url.pathname === "/api/backup/export") {
+      const exportData = {
+        exportedAt: new Date().toISOString(),
+        version: "1.0",
+        pigeons: db.pigeons,
+        breedingPlans: db.breedingPlans,
+        raceEvents: db.raceEvents
+      };
+      const filename = `pigeon-backup-${new Date().toISOString().slice(0,10)}.json`;
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`
+      });
+      return res.end(JSON.stringify(exportData, null, 2));
+    }
+    if (req.method === "POST" && url.pathname === "/api/backup/restore-preview") {
+      const input = await body(req);
+      let jsonData;
+      try {
+        if (typeof input.data === "string") {
+          jsonData = JSON.parse(input.data);
+        } else {
+          jsonData = input.data;
+        }
+      } catch (e) {
+        return sendJson(res, 400, { error: "invalid_json", message: `JSON解析失败：${e.message}` });
+      }
+      const validation = validateBackupData(jsonData);
+      if (!validation.valid) {
+        return sendJson(res, 400, { error: "invalid_structure", message: validation.message, details: validation.details });
+      }
+      const preview = analyzeBackupData(db, jsonData);
+      return sendJson(res, 200, preview);
+    }
+    if (req.method === "POST" && url.pathname === "/api/backup/restore-commit") {
+      const input = await body(req);
+      let jsonData;
+      try {
+        if (typeof input.data === "string") {
+          jsonData = JSON.parse(input.data);
+        } else {
+          jsonData = input.data;
+        }
+      } catch (e) {
+        return sendJson(res, 400, { error: "invalid_json", message: `JSON解析失败：${e.message}` });
+      }
+      const validation = validateBackupData(jsonData);
+      if (!validation.valid) {
+        return sendJson(res, 400, { error: "invalid_structure", message: validation.message, details: validation.details });
+      }
+      const mode = input.mode || "merge";
+      const result = await restoreBackupData(db, jsonData, mode);
+      if (result.success) {
+        await saveDb(db);
+      }
+      return sendJson(res, 200, result);
     }
     sendJson(res, 404, { error: "not_found" });
   } catch (error) {
