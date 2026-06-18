@@ -56,7 +56,8 @@ function relation(db, ringNo) {
   const children = db.pigeons.filter(item => item.fatherRing === ringNo || item.motherRing === ringNo);
   const breedingPlans = getPigeonBreedingPlans(db, ringNo);
   const raceResults = getPigeonRaceResults(db, ringNo);
-  return { pigeon, father, mother, children, breedingPlans, raceResults };
+  const raceStats = getPigeonRaceStats(db, ringNo);
+  return { pigeon, father, mother, children, breedingPlans, raceResults, raceStats };
 }
 
 function buildPedigreeNode(db, ringNo, level, maxUpLevel, visited, path) {
@@ -920,6 +921,85 @@ function getPigeonRaceResults(db, ringNo) {
   return results.sort((a, b) => b.date.localeCompare(a.date));
 }
 
+function calculateRaceStats(event, pigeons) {
+  const results = event.results || [];
+  const stats = {
+    totalParticipants: results.length,
+    fastestReturnTime: null,
+    topTen: [],
+    noRankCount: 0
+  };
+
+  if (results.length === 0) {
+    return stats;
+  }
+
+  const pigeonMap = new Map(pigeons.map(p => [p.ringNo, p]));
+
+  const validTimeResults = results.filter(r => r.returnTime && r.returnTime.trim() !== "");
+  if (validTimeResults.length > 0) {
+    validTimeResults.sort((a, b) => a.returnTime.localeCompare(b.returnTime));
+    stats.fastestReturnTime = validTimeResults[0].returnTime;
+  }
+
+  const rankedResults = results.filter(r => r.rank && r.rank > 0).sort((a, b) => a.rank - b.rank);
+  stats.topTen = rankedResults.slice(0, 10).map(r => {
+    const pigeon = pigeonMap.get(r.ringNo);
+    return {
+      ringNo: r.ringNo,
+      rank: r.rank,
+      returnTime: r.returnTime || "",
+      owner: pigeon?.owner || "",
+      color: pigeon?.color || "",
+      loft: pigeon?.loft || ""
+    };
+  });
+
+  stats.noRankCount = results.filter(r => !r.rank || r.rank <= 0).length;
+
+  return stats;
+}
+
+function getPigeonRaceStats(db, ringNo) {
+  const results = getPigeonRaceResults(db, ringNo);
+  const stats = {
+    bestRank: null,
+    bestRankEvent: null,
+    latestRace: null,
+    totalRaces: results.length
+  };
+
+  if (results.length === 0) {
+    return stats;
+  }
+
+  const rankedResults = results.filter(r => r.rank && r.rank > 0);
+  if (rankedResults.length > 0) {
+    rankedResults.sort((a, b) => a.rank - b.rank);
+    stats.bestRank = rankedResults[0].rank;
+    stats.bestRankEvent = {
+      eventId: rankedResults[0].eventId,
+      eventName: rankedResults[0].eventName,
+      date: rankedResults[0].date,
+      distance: rankedResults[0].distance
+    };
+  }
+
+  const sortedByDate = [...results].sort((a, b) => b.date.localeCompare(a.date));
+  if (sortedByDate.length > 0) {
+    stats.latestRace = {
+      eventId: sortedByDate[0].eventId,
+      eventName: sortedByDate[0].eventName,
+      date: sortedByDate[0].date,
+      distance: sortedByDate[0].distance,
+      returnTime: sortedByDate[0].returnTime,
+      rank: sortedByDate[0].rank || null
+    };
+  }
+
+  return stats;
+}
+
 const page = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1128,6 +1208,29 @@ const page = `<!doctype html>
     .offline-toast.error { border-color:#f5c2be; }
     .offline-toast .title { font-weight:700; font-size:14px; margin-bottom:4px; }
     .offline-toast .msg { color:var(--muted); font-size:12px; }
+    .stats-bar { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; margin-bottom:14px; }
+    .stats-bar .stat { padding:12px; text-align:center; }
+    .stats-bar .stat .num { font-size:22px; font-weight:700; margin-bottom:4px; }
+    .stats-bar .stat .lbl { font-size:12px; color:var(--muted); }
+    .top-ten-section { margin-top:14px; }
+    .top-ten-section h4 { margin:0 0 10px; font-size:14px; color:var(--accent); border-bottom:2px solid var(--accent); padding-bottom:4px; }
+    .top-ten-list { display:grid; gap:6px; }
+    .top-ten-item { display:grid; grid-template-columns:60px 1fr auto; gap:10px; align-items:center; padding:8px 10px; background:#f8fafb; border:1px solid var(--line); border-radius:6px; }
+    .top-ten-rank { font-weight:700; font-size:16px; color:var(--accent); }
+    .top-ten-rank.gold { color:#d4a017; }
+    .top-ten-rank.silver { color:#8a8a8a; }
+    .top-ten-rank.bronze { color:#cd7f32; }
+    .top-ten-info .ring { font-weight:700; }
+    .top-ten-info .meta { color:var(--muted); font-size:12px; margin-top:2px; }
+    .top-ten-time { font-family:ui-monospace,Menlo,Consolas,monospace; color:var(--ink); }
+    .race-summary-section { margin-top:14px; padding:12px; background:#f8fafb; border:1px solid var(--line); border-radius:8px; }
+    .race-summary-section h4 { margin:0 0 10px; font-size:14px; }
+    .pigeon-race-stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }
+    .pigeon-race-stat { background:#f8fafb; border:1px solid var(--line); border-radius:6px; padding:10px; }
+    .pigeon-race-stat .stat-label { font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .pigeon-race-stat .stat-value { font-weight:700; font-size:15px; }
+    .pigeon-race-stat .stat-value.best { color:var(--yellow); }
+    .pigeon-race-stat .stat-meta { font-size:12px; color:var(--muted); margin-top:2px; }
     @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} .conflict-detail .compare { grid-template-columns:1fr; } }
   </style>
 </head>
@@ -1300,6 +1403,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
                   <button id="cancelEditEventBtn" class="secondary">取消</button>
                 </div>
               </div>
+              <div id="raceStatsSection"></div>
               <div class="race-tabs">
                 <div class="race-tab active" data-tab="entry">成绩录入</div>
                 <div class="race-tab" data-tab="list">成绩列表</div>
@@ -2475,6 +2579,18 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       }).join("") : '<div class="vaccine-empty">暂无配对计划</div>';
       let raceResultsHtml = '';
       const raceResults = data.raceResults || [];
+      const raceStats = data.raceStats || null;
+      let raceStatsHtml = '';
+      if (raceStats) {
+        const bestRankHtml = raceStats.bestRank
+          ? '<div class="pigeon-race-stat"><div class="stat-label">🏆 最佳名次</div><div class="stat-value best">第' + raceStats.bestRank + '名</div>' + (raceStats.bestRankEvent ? '<div class="stat-meta">' + raceStats.bestRankEvent.eventName + '（' + raceStats.bestRankEvent.date + '）</div>' : '') + '</div>'
+          : '<div class="pigeon-race-stat"><div class="stat-label">🏆 最佳名次</div><div class="stat-value">-</div><div class="stat-meta">暂无排名记录</div></div>';
+        const latestRaceHtml = raceStats.latestRace
+          ? '<div class="pigeon-race-stat"><div class="stat-label">🕐 最近参赛</div><div class="stat-value">' + raceStats.latestRace.eventName + '</div><div class="stat-meta">' + raceStats.latestRace.date + ' · 距离' + raceStats.latestRace.distance + 'km' + (raceStats.latestRace.rank ? ' · 第' + raceStats.latestRace.rank + '名' : '') + (raceStats.latestRace.returnTime ? ' · 归巢' + raceStats.latestRace.returnTime : '') + '</div></div>'
+          : '<div class="pigeon-race-stat"><div class="stat-label">🕐 最近参赛</div><div class="stat-value">-</div><div class="stat-meta">暂无参赛记录</div></div>';
+        const totalRacesHtml = '<div class="pigeon-race-stat" style="grid-column: span 2;"><div class="stat-label">📊 参赛统计</div><div class="stat-value">共 ' + raceStats.totalRaces + ' 场比赛</div></div>';
+        raceStatsHtml = '<div class="pigeon-race-stats">' + bestRankHtml + latestRaceHtml + '</div>';
+      }
       if (raceResults.length > 0) {
         const grouped = {};
         raceResults.forEach(r => {
@@ -2513,7 +2629,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         '<div><label>出生棚号</label><input id="editLoft" value="' + (p.loft || "") + '"></div>' +
         '<button type="submit">保存档案修正</button>' +
         '</form><div id="pigeonEditFeedback" class="hint" style="margin-top:8px;"></div></div>';
-      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div>' + editFormHtml + '<div class="section"><b>已登记子代</b><div class="children-list">'+childrenHtml+'</div></div><div class="section"><b>配对计划</b><div class="plan-list">'+plansHtml+'</div></div><div class="section"><b>赛事成绩</b>'+raceResultsHtml+'</div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="section"><b>转让审核记录</b>'+detailTransferHeaderExtra+'<div class="transfer-list">'+transferDetailHtml+'</div></div>';
+      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div>' + editFormHtml + '<div class="section"><b>已登记子代</b><div class="children-list">'+childrenHtml+'</div></div><div class="section"><b>配对计划</b><div class="plan-list">'+plansHtml+'</div></div><div class="section"><b>赛事成绩</b>'+raceStatsHtml+raceResultsHtml+'</div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="section"><b>转让审核记录</b>'+detailTransferHeaderExtra+'<div class="transfer-list">'+transferDetailHtml+'</div></div>';
       const pigeonEditForm = detail.querySelector("#pigeonEditForm");
       if (pigeonEditForm) {
         pigeonEditForm.onsubmit = async event => {
@@ -2766,6 +2882,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         document.querySelector("#raceEventEditForm").style.display = "none";
         document.querySelector("#editEventBtn").style.display = "inline-block";
         document.querySelector("#resultCount").textContent = event.results.length;
+        renderRaceStats(event.stats);
         renderResultList(event.results);
         renderEntryTable();
         document.querySelector("#entryFeedback").innerHTML = "";
@@ -2774,6 +2891,33 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       } catch(e) {
         alert("加载失败：" + e.message);
       }
+    }
+    function renderRaceStats(stats) {
+      const section = document.querySelector("#raceStatsSection");
+      if (!stats || !section) return;
+
+      const topTenHtml = stats.topTen && stats.topTen.length > 0
+        ? '<div class="top-ten-section"><h4>🏆 前十名榜单</h4><div class="top-ten-list">' +
+          stats.topTen.map((r, idx) => {
+            let rankClass = "";
+            if (idx === 0) rankClass = "gold";
+            else if (idx === 1) rankClass = "silver";
+            else if (idx === 2) rankClass = "bronze";
+            const metaParts = [];
+            if (r.owner) metaParts.push(r.owner);
+            if (r.color) metaParts.push(r.color);
+            if (r.loft) metaParts.push(r.loft);
+            return '<div class="top-ten-item"><div class="top-ten-rank ' + rankClass + '">第' + r.rank + '名</div><div class="top-ten-info"><div class="ring">' + r.ringNo + '</div>' + (metaParts.length > 0 ? '<div class="meta">' + metaParts.join(" · ") + '</div>' : '') + '</div><div class="top-ten-time">' + (r.returnTime || "-") + '</div></div>';
+          }).join("") +
+          '</div></div>'
+        : "";
+
+      section.innerHTML = '<div class="stats-bar">' +
+        '<div class="stat"><div class="num">' + stats.totalParticipants + '</div><div class="lbl">参赛数量</div></div>' +
+        '<div class="stat"><div class="num">' + (stats.fastestReturnTime || "-") + '</div><div class="lbl">最快归巢时间</div></div>' +
+        '<div class="stat"><div class="num">' + (stats.topTen ? stats.topTen.length : 0) + '</div><div class="lbl">有名次记录</div></div>' +
+        '<div class="stat"><div class="num">' + stats.noRankCount + '</div><div class="lbl">无名次记录</div></div>' +
+        '</div>' + topTenHtml;
     }
     function refreshPigeonDetail() {
       if (currentRingNo) {
@@ -4072,7 +4216,8 @@ CHN-2026-105,育种棚,CHN-2022-188,CHN-2023-512,石板,种鸽棚`;
       const eventId = decodeURIComponent(raceEventMatch[1]);
       const event = db.raceEvents.find(e => e.id === eventId);
       if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
-      return sendJson(res, 200, event);
+      const stats = calculateRaceStats(event, db.pigeons);
+      return sendJson(res, 200, { ...event, stats });
     }
     if (raceEventMatch && req.method === "PUT") {
       const eventId = decodeURIComponent(raceEventMatch[1]);

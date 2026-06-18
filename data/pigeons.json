@@ -72,5 +72,52 @@
     }
   ],
   "breedingPlans": [],
-  "raceEvents": []
+  "raceEvents": [
+    {
+      "id": "1781795417253",
+      "name": "验证统计赛事",
+      "date": "2026-07-01",
+      "distance": 300,
+      "results": [
+        {
+          "ringNo": "CHN-2026-001",
+          "returnTime": "10:05:00",
+          "rank": 1
+        },
+        {
+          "ringNo": "CHN-2023-512",
+          "returnTime": "10:12:00",
+          "rank": 3
+        },
+        {
+          "ringNo": "CHN-2026-001",
+          "returnTime": "",
+          "rank": 0
+        },
+        {
+          "ringNo": "CHN-2022-188",
+          "returnTime": "10:20:00",
+          "rank": 0
+        }
+      ]
+    },
+    {
+      "id": "1781795202930",
+      "name": "春季200公里特比环",
+      "date": "2026-06-15",
+      "distance": 200,
+      "results": [
+        {
+          "ringNo": "CHN-2026-001",
+          "returnTime": "09:15:30",
+          "rank": 1
+        },
+        {
+          "ringNo": "CHN-2022-188",
+          "returnTime": "09:18:45",
+          "rank": 5
+        }
+      ]
+    }
+  ]
 }
