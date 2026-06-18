@@ -1,28 +1,6 @@
 {
   "pigeons": [
     {
-      "ringNo": "CHN-API-002",
-      "owner": "API测试棚",
-      "fatherRing": "",
-      "motherRing": "",
-      "color": "雨点",
-      "loft": "API-B棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
-      "ringNo": "CHN-API-001",
-      "owner": "API测试棚",
-      "fatherRing": "CHN-2022-188",
-      "motherRing": "CHN-2023-512",
-      "color": "灰",
-      "loft": "API-A棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
       "ringNo": "CHN-2026-001",
       "owner": "北岸棚",
       "fatherRing": "CHN-2022-188",
@@ -42,7 +20,7 @@
           "from": "育种棚",
           "to": "北岸棚",
           "status": "confirmed",
-          "id": "1781792677310lz7k",
+          "id": "init-trans-001",
           "createdAt": "2026-04-15",
           "confirmedAt": "2026-04-15",
           "cancelledAt": null
@@ -65,7 +43,13 @@
       "motherRing": "",
       "color": "雨点",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-05-15",
+          "name": "鸽痘",
+          "remark": "春季接种"
+        }
+      ],
       "transfers": [],
       "races": []
     },
@@ -76,7 +60,13 @@
       "motherRing": "",
       "color": "红轮",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-03-20",
+          "name": "新城疫",
+          "remark": "基础免疫"
+        }
+      ],
       "transfers": [],
       "races": []
     }
