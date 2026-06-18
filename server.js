@@ -299,11 +299,19 @@ function performPedigreeAudit(db) {
   const issues = [];
   const allRingNos = new Set(db.pigeons.map(p => p.ringNo));
   const ringCountMap = new Map();
+  const ringIndexMap = new Map();
   const pigeonMap = new Map();
-  db.pigeons.forEach(p => {
+  db.pigeons.forEach((p, index) => {
     pigeonMap.set(p.ringNo, p);
     const count = (ringCountMap.get(p.ringNo) || 0) + 1;
     ringCountMap.set(p.ringNo, count);
+    if (!ringIndexMap.has(p.ringNo)) ringIndexMap.set(p.ringNo, []);
+    ringIndexMap.get(p.ringNo).push({
+      index,
+      owner: p.owner,
+      color: p.color,
+      loft: p.loft
+    });
   });
 
   for (const [ringNo, count] of ringCountMap.entries()) {
@@ -315,7 +323,8 @@ function performPedigreeAudit(db) {
         ringNo: ringNo,
         message: `足环号重复，出现 ${count} 次`,
         details: `足环号 ${ringNo} 在档案中重复出现 ${count} 次，请删除重复记录。`,
-        relatedRingNos: []
+        relatedRingNos: [],
+        extra: { source: "pigeon_records", duplicateRecords: ringIndexMap.get(ringNo) || [] }
       });
     }
   }
@@ -1466,6 +1475,10 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       cachedAuditResult = null;
       cachedAuditPromise = null;
     }
+    async function refreshAfterPigeonChange() {
+      invalidateAuditCache();
+      await load();
+    }
     function renderCards() {
       const filtered = applyFilters();
       updateFilterSummary(filtered);
@@ -1539,12 +1552,21 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         if (list.length === 0) return "";
         const items = list.map(issue => {
           const typeLabel = typeLabels[issue.type] || issue.type;
-          let actionHtml = "";
+          const actions = [];
           const evtId = issue.eventId || (issue.extra && issue.extra.eventId);
           if (evtId) {
-            actionHtml = ' <button class="btn-small secondary" data-detail-event="' + evtId + '">查看赛事</button>';
+            actions.push('<button class="btn-small secondary" data-detail-event="' + evtId + '">查看赛事</button>');
           }
-          return '<div style="padding:8px 10px;border-left:3px solid ' + color + ';background:' + bg + ';margin-top:6px;border-radius:0 4px 4px 0;"><div style="font-size:13px;"><b>' + icon + ' ' + typeLabel + '</b>：' + issue.message + actionHtml + '</div><div class="meta" style="margin-top:2px;">' + issue.details + '</div></div>';
+          if (issue.type === "missing_parent" || issue.type === "circular_parent") {
+            actions.push('<button class="btn-small secondary" data-focus-lineage="1">修正父母关系</button>');
+          }
+          if (issue.type === "duplicate_ring" && issue.extra && issue.extra.source === "pigeon_records" && issue.extra.duplicateRecords) {
+            issue.extra.duplicateRecords.forEach(record => {
+              actions.push('<button class="btn-small secondary danger" data-delete-duplicate-record="' + issue.ringNo + '|' + record.index + '">删除第' + (record.index + 1) + '条档案</button>');
+            });
+          }
+          const actionHtml = actions.length ? '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;">' + actions.join("") + '</div>' : "";
+          return '<div style="padding:8px 10px;border-left:3px solid ' + color + ';background:' + bg + ';margin-top:6px;border-radius:0 4px 4px 0;"><div style="font-size:13px;"><b>' + icon + ' ' + typeLabel + '</b>：' + issue.message + '</div><div class="meta" style="margin-top:2px;">' + issue.details + '</div>' + actionHtml + '</div>';
         }).join("");
         return items;
       };
@@ -1581,6 +1603,26 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
               raceModal.style.display = "block";
               loadRaceEvents();
               setTimeout(() => loadRaceDetail(eventId), 100);
+            };
+          });
+          detail.querySelectorAll("[data-focus-lineage]").forEach(btn => {
+            btn.onclick = () => {
+              const form = detail.querySelector("#pigeonEditForm");
+              if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
+              const input = detail.querySelector("#editFatherRing");
+              if (input) input.focus();
+            };
+          });
+          detail.querySelectorAll("[data-delete-duplicate-record]").forEach(btn => {
+            btn.onclick = async () => {
+              const [ringNo, index] = btn.dataset.deleteDuplicateRecord.split("|");
+              if (!confirm("确定删除这条重复档案？删除后无法从页面撤销。")) return;
+              try {
+                await api('/api/pigeons/' + encodeURIComponent(ringNo) + '/records/' + encodeURIComponent(index), { method: 'DELETE' });
+                await refreshAfterPigeonChange();
+              } catch(e) {
+                alert("删除失败：" + e.message);
+              }
             };
           });
         }
@@ -1624,7 +1666,37 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         if (t.cancelledAt) dateInfo += ' · 取消日期：'+t.cancelledAt;
         return '<div class="transfer-item '+status+'"><div class="transfer-info">'+statusBadge+' <b>'+t.from+'</b> → <b>'+t.to+'</b><br><span class="meta">'+dateInfo+'</span></div>'+actions+'</div>';
       }).join("") : '<div class="transfer-empty">暂无转让记录</div>';
-      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div><div class="section"><b>已登记子代</b><div class="children-list">'+childrenHtml+'</div></div><div class="section"><b>配对计划</b><div class="plan-list">'+plansHtml+'</div></div><div class="section"><b>赛事成绩</b>'+raceResultsHtml+'</div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="section"><b>转让审核记录</b>'+detailTransferHeaderExtra+'<div class="transfer-list">'+transferDetailHtml+'</div></div>';
+      const editFormHtml = '<div class="section"><b>档案处理</b><form id="pigeonEditForm" class="race-edit-form" style="margin-top:10px;">' +
+        '<div><label>鸽主</label><input id="editOwner" value="' + (p.owner || "") + '"></div>' +
+        '<div><label>父鸽足环号</label><input id="editFatherRing" value="' + (p.fatherRing || "") + '" placeholder="留空表示未登记"></div>' +
+        '<div><label>母鸽足环号</label><input id="editMotherRing" value="' + (p.motherRing || "") + '" placeholder="留空表示未登记"></div>' +
+        '<div><label>羽色</label><input id="editColor" value="' + (p.color || "") + '"></div>' +
+        '<div><label>出生棚号</label><input id="editLoft" value="' + (p.loft || "") + '"></div>' +
+        '<button type="submit">保存档案修正</button>' +
+        '</form><div id="pigeonEditFeedback" class="hint" style="margin-top:8px;"></div></div>';
+      detail.innerHTML = '<h2>'+p.ringNo+' 血统档案</h2><div class="relation"><div class="small"><b>父鸽</b><br>'+(data.father?.ringNo || p.fatherRing || "未登记")+'</div><div class="small"><b>本鸽</b><br>'+p.owner+' · '+p.color+'</div><div class="small"><b>母鸽</b><br>'+(data.mother?.ringNo || p.motherRing || "未登记")+'</div></div>' + editFormHtml + '<div class="section"><b>已登记子代</b><div class="children-list">'+childrenHtml+'</div></div><div class="section"><b>配对计划</b><div class="plan-list">'+plansHtml+'</div></div><div class="section"><b>赛事成绩</b>'+raceResultsHtml+'</div><div class="section"><b>疫苗接种记录</b><div class="vaccine-list">'+vaccineHtml+'</div></div><div class="section"><b>转让审核记录</b>'+detailTransferHeaderExtra+'<div class="transfer-list">'+transferDetailHtml+'</div></div>';
+      const pigeonEditForm = detail.querySelector("#pigeonEditForm");
+      if (pigeonEditForm) {
+        pigeonEditForm.onsubmit = async event => {
+          event.preventDefault();
+          const payload = {
+            owner: detail.querySelector("#editOwner").value,
+            fatherRing: detail.querySelector("#editFatherRing").value,
+            motherRing: detail.querySelector("#editMotherRing").value,
+            color: detail.querySelector("#editColor").value,
+            loft: detail.querySelector("#editLoft").value
+          };
+          const feedback = detail.querySelector("#pigeonEditFeedback");
+          try {
+            await api('/api/pigeons/' + encodeURIComponent(p.ringNo), { method: 'PUT', body: JSON.stringify(payload) });
+            if (feedback) feedback.textContent = "档案已更新，正在重新审查...";
+            await refreshAfterPigeonChange();
+          } catch(e) {
+            if (feedback) feedback.textContent = "保存失败：" + e.message;
+            else alert("保存失败：" + e.message);
+          }
+        };
+      }
       detail.querySelectorAll("[data-view-event], [data-event-link]").forEach(el => {
         el.onclick = (e) => {
           e.stopPropagation();
@@ -2792,6 +2864,38 @@ const server = http.createServer(async (req, res) => {
       db.pigeons.unshift(pigeon);
       await saveDb(db);
       return sendJson(res, 201, pigeon);
+    }
+    const pigeonEditMatch = url.pathname.match(/^\/api\/pigeons\/(.+)$/);
+    if (pigeonEditMatch && req.method === "PUT") {
+      const ringNo = decodeURIComponent(pigeonEditMatch[1]);
+      const pigeon = db.pigeons.find(item => item.ringNo === ringNo);
+      if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
+      const input = await body(req);
+      if (input.owner !== undefined) pigeon.owner = (input.owner || "").trim() || pigeon.owner;
+      if (input.fatherRing !== undefined) pigeon.fatherRing = (input.fatherRing || "").trim();
+      if (input.motherRing !== undefined) pigeon.motherRing = (input.motherRing || "").trim();
+      if (input.color !== undefined) pigeon.color = (input.color || "").trim() || pigeon.color;
+      if (input.loft !== undefined) pigeon.loft = (input.loft || "").trim() || pigeon.loft;
+      await saveDb(db);
+      return sendJson(res, 200, pigeon);
+    }
+    const pigeonDeleteMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/records\/(\d+)$/);
+    if (pigeonDeleteMatch && req.method === "DELETE") {
+      const ringNo = decodeURIComponent(pigeonDeleteMatch[1]);
+      const index = Number(pigeonDeleteMatch[2]);
+      if (!Number.isInteger(index) || index < 0 || index >= db.pigeons.length) {
+        return sendJson(res, 404, { error: "pigeon_not_found" });
+      }
+      if (db.pigeons[index].ringNo !== ringNo) {
+        return sendJson(res, 409, { error: "档案位置已变化，请刷新后重试" });
+      }
+      const duplicateCount = db.pigeons.filter(item => item.ringNo === ringNo).length;
+      if (duplicateCount <= 1) {
+        return sendJson(res, 400, { error: "该足环号当前没有重复档案，不能从审查入口删除" });
+      }
+      const removed = db.pigeons.splice(index, 1)[0];
+      await saveDb(db);
+      return sendJson(res, 200, { success: true, removed });
     }
     const relationMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/relation$/);
     if (relationMatch && req.method === "GET") {
