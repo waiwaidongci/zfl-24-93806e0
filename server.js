@@ -1800,10 +1800,10 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           '<div class="compare">' +
           '<div class="col local"><div class="label">本地待提交 vs 服务器</div>' + rows + '</div>' +
           '</div>' +
-          '<p class="meta" style="margin-top:8px;font-size:12px;color:var(--muted);">若选择忽略冲突重试：将跳过此创建操作（档案已存在）。</p>' +
+          '<p class="meta" style="margin-top:8px;font-size:12px;color:var(--muted);">若选择保留服务器档案：将跳过本地创建操作，不改写现有档案。</p>' +
           '<div class="actions">' +
           '<button class="btn-small secondary" data-discard="' + item.id + '">放弃此操作</button>' +
-          '<button class="btn-small" data-retry="' + item.id + '">忽略并完成同步</button>' +
+          '<button class="btn-small" data-resolve="' + item.id + '">保留服务器档案</button>' +
           '</div>' +
           '</div>';
       }
@@ -1963,6 +1963,18 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           renderOfflineQueue();
           if (result.success) showToast("success", "同步成功", "操作已成功同步到服务器");
           else if (result.conflict) showToast("conflict", "检测到冲突", "请在队列中查看详情并处理");
+        };
+      });
+      listEl.querySelectorAll("[data-resolve]").forEach(btn => {
+        btn.onclick = () => {
+          const id = btn.dataset.resolve;
+          const item = offlineQueue.queue.find(i => i.id === id);
+          if (!item) return;
+          offlineQueue.update(id, { status: "success", result: item.conflict?.serverData || null, conflict: null, error: null });
+          renderOfflineIndicator();
+          renderOfflineBanner();
+          renderOfflineQueue();
+          showToast("success", "冲突已处理", "已保留服务器现有档案，本地创建操作已跳过");
         };
       });
       listEl.querySelectorAll("[data-remove]").forEach(btn => {
@@ -3982,8 +3994,8 @@ const server = http.createServer(async (req, res) => {
             const force = !!inputData.__forceSync;
             const cleanInput = { ...inputData };
             delete cleanInput.__forceSync;
-            const existing = force ? null : db.pigeons.find(p => p.ringNo === cleanInput.ringNo);
-            if (existing) {
+            const existing = db.pigeons.find(p => p.ringNo === cleanInput.ringNo);
+            if (existing && !force) {
               result.status = "conflict";
               result.conflict = {
                 kind: "ring_exists",
@@ -3992,22 +4004,9 @@ const server = http.createServer(async (req, res) => {
                 serverData: existing
               };
             } else {
-              if (force) {
-                const idx = db.pigeons.findIndex(p => p.ringNo === cleanInput.ringNo);
-                if (idx >= 0) {
-                  const original = db.pigeons[idx];
-                  const merged = { ...original, ...cleanInput, vaccines: original.vaccines || [], transfers: original.transfers || [], races: original.races || [] };
-                  db.pigeons[idx] = merged;
-                  result.status = "success";
-                  result.data = merged;
-                  dbModified = true;
-                } else {
-                  const pigeon = { ...cleanInput, vaccines: [], transfers: [], races: [] };
-                  db.pigeons.unshift(pigeon);
-                  result.status = "success";
-                  result.data = pigeon;
-                  dbModified = true;
-                }
+              if (existing && force) {
+                result.status = "success";
+                result.data = existing;
               } else {
                 const pigeon = { ...cleanInput, vaccines: [], transfers: [], races: [] };
                 db.pigeons.unshift(pigeon);
