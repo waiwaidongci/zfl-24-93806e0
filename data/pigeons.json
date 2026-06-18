@@ -24,16 +24,6 @@
           "createdAt": "2026-04-15",
           "confirmedAt": "2026-04-15",
           "cancelledAt": null
-        },
-        {
-          "id": "1781786670394",
-          "date": "2026-06-18",
-          "from": "北岸棚",
-          "to": "测试鸽主",
-          "status": "pending",
-          "createdAt": "2026-06-18",
-          "confirmedAt": null,
-          "cancelledAt": null
         }
       ],
       "races": [

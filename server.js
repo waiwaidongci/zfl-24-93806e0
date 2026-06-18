@@ -972,7 +972,7 @@ const page = `<!doctype html>
     .header-actions { display:flex; gap:8px; }
     .filter-bar { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:14px; }
     .filter-bar h3 { margin:0 0 12px; font-size:15px; }
-    .filter-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; align-items:end; }
+    .filter-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; align-items:end; }
     .filter-item label { display:block; margin:0 0 5px; color:var(--muted); font-size:13px; }
     .filter-item select { width:100%; border:1px solid var(--line); border-radius:6px; padding:9px; font:inherit; }
     .filter-actions { display:flex; gap:8px; }
@@ -1159,7 +1159,7 @@ const page = `<!doctype html>
       <div class="panel" id="detail"></div>
       <div class="filter-bar">
         <h3>档案筛选</h3>
-        <div class="filter-grid" style="grid-template-columns:repeat(6,1fr);">
+        <div class="filter-grid">
           <div class="filter-item">
             <label>鸽舍</label>
             <select id="filterLoft"><option value="">全部鸽舍</option></select>
@@ -3680,7 +3680,7 @@ const server = http.createServer(async (req, res) => {
       await saveDb(db);
       return sendJson(res, 201, pigeon);
     }
-    const pigeonEditMatch = url.pathname.match(/^\/api\/pigeons\/(.+)$/);
+    const pigeonEditMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)$/);
     if (pigeonEditMatch && req.method === "PUT") {
       const ringNo = decodeURIComponent(pigeonEditMatch[1]);
       const pigeon = db.pigeons.find(item => item.ringNo === ringNo);
@@ -3712,17 +3712,17 @@ const server = http.createServer(async (req, res) => {
       await saveDb(db);
       return sendJson(res, 200, { success: true, removed });
     }
-    const relationMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/relation$/);
+    const relationMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/relation$/);
     if (relationMatch && req.method === "GET") {
       const data = relation(db, decodeURIComponent(relationMatch[1]));
       return data ? sendJson(res, 200, data) : sendJson(res, 404, { error: "pigeon_not_found" });
     }
-    const pedigreeMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/pedigree$/);
+    const pedigreeMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/pedigree$/);
     if (pedigreeMatch && req.method === "GET") {
       const data = buildPedigree(db, decodeURIComponent(pedigreeMatch[1]));
       return data ? sendJson(res, 200, data) : sendJson(res, 404, { error: "pigeon_not_found" });
     }
-    const actionMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/(transfers|races|vaccines)$/);
+    const actionMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/(transfers|races|vaccines)$/);
     if (actionMatch && req.method === "POST") {
       const pigeon = db.pigeons.find(item => item.ringNo === decodeURIComponent(actionMatch[1]));
       if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
