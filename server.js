@@ -77,6 +77,32 @@ function localDateString(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 10);
 }
+function computeDiffFields(localObj, serverObj) {
+  const diffs = [];
+  const allKeys = new Set([...Object.keys(localObj || {}), ...Object.keys(serverObj || {})]);
+  const fieldLabels = {
+    ringNo: "足环号", owner: "鸽主", color: "羽色", loft: "棚号",
+    fatherRing: "父鸽环号", motherRing: "母鸽环号",
+    date: "日期", name: "名称", remark: "备注",
+    from: "转出方", to: "转入方", status: "状态",
+    returnTime: "归巢时间", rank: "名次", event: "赛事", distance: "距离"
+  };
+  for (const key of allKeys) {
+    const localVal = localObj ? localObj[key] : undefined;
+    const serverVal = serverObj ? serverObj[key] : undefined;
+    const localStr = localVal === undefined || localVal === null ? "" : String(localVal);
+    const serverStr = serverVal === undefined || serverVal === null ? "" : String(serverVal);
+    if (localStr !== serverStr) {
+      diffs.push({
+        field: key,
+        label: fieldLabels[key] || key,
+        local: localVal,
+        server: serverVal
+      });
+    }
+  }
+  return diffs;
+}
 function relation(db, ringNo) {
   const pigeon = db.pigeons.find(item => item.ringNo === ringNo);
   if (!pigeon) return null;
@@ -909,11 +935,45 @@ const page = `<!doctype html>
     .status-badge.pending { background:#fff8e6; color:#9a7b1a; border:1px solid #e6d391; }
     .status-badge.confirmed { background:#f0faf4; color:var(--green); border:1px solid #a8d5ba; }
     .status-badge.cancelled { background:#f5f5f5; color:var(--muted); border:1px solid var(--line); text-decoration:line-through; }
-    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} }
+    .sync-queue-btn { position:relative; }
+    .sync-queue-btn .badge { position:absolute; top:-6px; right:-6px; background:var(--red); color:#fff; border-radius:999px; min-width:18px; height:18px; font-size:10px; display:flex; align-items:center; justify-content:center; padding:0 4px; font-weight:700; }
+    .queue-tabs { display:flex; gap:4px; margin-bottom:12px; border-bottom:1px solid var(--line); }
+    .queue-tab { padding:8px 14px; border:1px solid var(--line); border-bottom:none; border-radius:6px 6px 0 0; background:#f5f8fa; cursor:pointer; font-size:13px; margin-bottom:-1px; }
+    .queue-tab.active { background:#fff; border-bottom:1px solid #fff; font-weight:700; color:var(--accent); }
+    .queue-tab .count { margin-left:6px; background:#eef3f7; padding:1px 6px; border-radius:999px; font-size:11px; }
+    .queue-tab.active .count { background:var(--accent); color:#fff; }
+    .queue-list { max-height:420px; overflow-y:auto; }
+    .queue-item { background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:8px; }
+    .queue-item.success { border-color:#a8d5ba; background:#f0faf4; }
+    .queue-item.failed { border-color:#f5c2be; background:#fff5f5; }
+    .queue-item.conflict { border-color:#e6d391; background:#fffbeb; }
+    .queue-item.pending { border-color:#b8c8d8; }
+    .queue-item-header { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+    .queue-item-title { font-weight:700; font-size:14px; display:flex; align-items:center; gap:8px; }
+    .queue-item-type { font-size:11px; padding:2px 6px; border-radius:4px; background:#eef3f7; color:var(--muted); font-weight:500; }
+    .queue-item-meta { font-size:12px; color:var(--muted); margin-top:4px; }
+    .queue-item-actions { display:flex; gap:6px; flex-wrap:wrap; }
+    .queue-item-error { font-size:12px; color:var(--red); margin-top:6px; }
+    .queue-item-conflict { font-size:12px; color:#92400e; margin-top:6px; }
+    .queue-diff-section { margin-top:10px; padding-top:10px; border-top:1px dashed #e6d391; }
+    .queue-diff-title { font-size:12px; font-weight:600; color:#92400e; margin-bottom:6px; }
+    .queue-diff-table { width:100%; border-collapse:collapse; font-size:12px; }
+    .queue-diff-table th, .queue-diff-table td { padding:5px 8px; text-align:left; border-bottom:1px solid #f0e8c8; }
+    .queue-diff-table th { background:#fef3c7; color:#92400e; font-weight:600; }
+    .queue-diff-table td.col-field { font-weight:600; width:80px; }
+    .queue-diff-table td.col-local { color:var(--red); width:calc(50% - 40px); }
+    .queue-diff-table td.col-server { color:var(--green); width:calc(50% - 40px); }
+    .queue-summary { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:14px; }
+    .queue-summary .stat { padding:10px 8px; }
+    .queue-summary .stat .num { font-size:20px; }
+    .queue-empty { text-align:center; padding:40px 20px; color:var(--muted); font-size:14px; }
+    .queue-footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:14px; padding-top:14px; border-top:1px solid var(--line); flex-wrap:wrap; }
+    .queue-footer-actions { display:flex; gap:8px; flex-wrap:wrap; }
+    @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1px 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} .queue-summary{grid-template-columns:repeat(2,1fr);} }
   </style>
 </head>
 <body>
-  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
+  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="syncQueueBtn" class="secondary sync-queue-btn">离线队列<span class="badge" id="syncQueueBadge" style="display:none;">0</span></button><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
   <main>
     <form id="form">
       <h2>创建鸽只档案</h2>
@@ -923,7 +983,10 @@ const page = `<!doctype html>
       <label>母鸽足环号</label><input name="motherRing">
       <label>羽色</label><input name="color" required>
       <label>出生棚号</label><input name="loft" required>
-      <button>保存档案</button>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button type="submit">保存档案</button>
+        <button type="button" class="secondary" id="addToQueueBtn">加入队列</button>
+      </div>
     </form>
     <section>
       <div class="toolbar"><input id="search" placeholder="输入足环号查询血统"><button id="searchBtn">查询</button></div>
@@ -1176,8 +1239,9 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
                     </tbody>
                   </table>
                 </div>
-                <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+                <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                   <button id="submitEntryBtn">提交成绩</button>
+                  <button id="queueEntryBtn" class="secondary">加入队列</button>
                   <span class="hint" id="entryHint">提示：足环号必须已在档案中登记</span>
                 </div>
                 <div id="entryFeedback"></div>
@@ -1305,6 +1369,41 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       </div>
     </div>
   </div>
+  <div id="syncQueueModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal" style="max-width:900px;">
+        <div class="modal-header">
+          <h2>离线同步队列</h2>
+          <button id="closeSyncQueue" class="secondary">关闭</button>
+        </div>
+        <div class="queue-summary">
+          <div class="stat"><div class="num" id="queueTotal">0</div><div class="lbl">总计</div></div>
+          <div class="stat good"><div class="num" id="queueSuccess">0</div><div class="lbl">成功</div></div>
+          <div class="stat bad"><div class="num" id="queueFailed">0</div><div class="lbl">失败</div></div>
+          <div class="stat warn"><div class="num" id="queueConflict">0</div><div class="lbl">冲突</div></div>
+        </div>
+        <div class="queue-tabs">
+          <div class="queue-tab active" data-queue-tab="all">全部<span class="count" id="tabCountAll">0</span></div>
+          <div class="queue-tab" data-queue-tab="pending">待同步<span class="count" id="tabCountPending">0</span></div>
+          <div class="queue-tab" data-queue-tab="success">成功<span class="count" id="tabCountSuccess">0</span></div>
+          <div class="queue-tab" data-queue-tab="failed">失败<span class="count" id="tabCountFailed">0</span></div>
+          <div class="queue-tab" data-queue-tab="conflict">冲突<span class="count" id="tabCountConflict">0</span></div>
+        </div>
+        <div id="queueList" class="queue-list"></div>
+        <div class="queue-footer">
+          <div class="queue-footer-actions">
+            <button id="syncAllBtn" class="primary">全部同步</button>
+            <button id="retryFailedBtn" class="secondary">重试失败</button>
+            <button id="forceAllBtn" class="secondary">强制同步冲突</button>
+          </div>
+          <div class="queue-footer-actions">
+            <button id="clearSuccessBtn" class="secondary">清空成功项</button>
+            <button id="clearAllBtn" class="secondary danger">清空全部</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
   <script>
     const form = document.querySelector("#form");
     const cards = document.querySelector("#cards");
@@ -1374,13 +1473,19 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           const actions = status === "pending" ? '<div class="transfer-actions"><button class="btn-small" data-confirm-transfer="'+p.ringNo+'|'+t.id+'">确认</button><button class="btn-small secondary" data-cancel-transfer="'+p.ringNo+'|'+t.id+'">取消</button></div>' : '';
           return '<div class="transfer-item '+status+'"><div class="transfer-info">'+statusBadge+' <b>'+t.from+'</b> → <b>'+t.to+'</b><br><span class="meta">申请日期：'+(t.createdAt||t.date)+(t.confirmedAt?' · 确认日期：'+t.confirmedAt:'')+(t.cancelledAt?' · 取消日期：'+t.cancelledAt:'')+'</span></div>'+actions+'</div>';
         }).join("") : '<div class="transfer-empty">暂无转让记录</div>';
-        return '<article class="card"><h3>'+p.ringNo+'</h3><span class="pill">'+p.owner+'</span><div class="meta">'+p.color+' · '+p.loft+'</div><div>父：'+(p.fatherRing || "未登记")+'</div><div>母：'+(p.motherRing || "未登记")+'</div><div class="section"><b>疫苗接种</b><div class="vaccine-list">'+vaccineSummary+'</div><label>疫苗名称</label><input data-vname="'+p.ringNo+'" placeholder="如新城疫、鸽痘"><label>接种日期</label><input data-vdate="'+p.ringNo+'" type="date"><label>备注</label><input data-vremark="'+p.ringNo+'" placeholder="选填"><button data-vaccine="'+p.ringNo+'">保存疫苗记录</button></div><div class="section"><b>转让记录</b>'+transferHeaderExtra+'<div class="transfer-list">'+transferListHtml+'</div><label>新归属人</label><input data-to="'+p.ringNo+'" placeholder="输入新归属人"><button data-transfer="'+p.ringNo+'">提交转让</button></div></article>';
+        return '<article class="card"><h3>'+p.ringNo+'</h3><span class="pill">'+p.owner+'</span><div class="meta">'+p.color+' · '+p.loft+'</div><div>父：'+(p.fatherRing || "未登记")+'</div><div>母：'+(p.motherRing || "未登记")+'</div><div class="section"><b>疫苗接种</b><div class="vaccine-list">'+vaccineSummary+'</div><label>疫苗名称</label><input data-vname="'+p.ringNo+'" placeholder="如新城疫、鸽痘"><label>接种日期</label><input data-vdate="'+p.ringNo+'" type="date"><label>备注</label><input data-vremark="'+p.ringNo+'" placeholder="选填"><div style="display:flex; gap:6px; margin-top:8px;"><button data-vaccine="'+p.ringNo+'">保存疫苗记录</button><button class="secondary" data-vaccine-queue="'+p.ringNo+'">加入队列</button></div></div><div class="section"><b>转让记录</b>'+transferHeaderExtra+'<div class="transfer-list">'+transferListHtml+'</div><label>新归属人</label><input data-to="'+p.ringNo+'" placeholder="输入新归属人"><div style="display:flex; gap:6px; margin-top:8px;"><button data-transfer="'+p.ringNo+'">提交转让</button><button class="secondary" data-transfer-queue="'+p.ringNo+'">加入队列</button></div></div></article>';
       }).join("");
       document.querySelectorAll("[data-transfer]").forEach(btn => btn.onclick = async () => {
         const ringNo = btn.dataset.transfer; const to = document.querySelector('[data-to="'+ringNo+'"]').value.trim();
         if (!to) { alert("请输入新归属人"); return; }
         try { await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/transfers', { method:'POST', body: JSON.stringify({ to }) }); }
-        catch(e) { alert("提交失败："+e.message); return; }
+        catch(e) {
+          if (confirm("提交失败："+e.message+"\\n\\n是否加入离线队列，稍后重试？")) {
+            addToQueue("add_transfer", { ringNo, to });
+            alert("已加入离线队列");
+          }
+          return;
+        }
         document.querySelector('[data-to="'+ringNo+'"]').value = ''; await load();
       });
       document.querySelectorAll("[data-confirm-transfer]").forEach(btn => btn.onclick = async () => {
@@ -1400,8 +1505,36 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         const remark = document.querySelector('[data-vremark="'+ringNo+'"]').value.trim();
         if (!name) { alert("请填写疫苗名称"); return; }
         if (!date) { alert("请选择接种日期"); return; }
-        await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/vaccines', { method:'POST', body: JSON.stringify({ name, date, remark }) });
-        await load();
+        try {
+          await api('/api/pigeons/'+encodeURIComponent(ringNo)+'/vaccines', { method:'POST', body: JSON.stringify({ name, date, remark }) });
+          await load();
+        } catch(e) {
+          if (confirm("提交失败：" + e.message + "\\n\\n是否加入离线队列，稍后重试？")) {
+            addToQueue("add_vaccine", { ringNo, name, date, remark });
+            alert("已加入离线队列");
+          }
+        }
+      });
+      document.querySelectorAll("[data-vaccine-queue]").forEach(btn => btn.onclick = () => {
+        const ringNo = btn.dataset.vaccineQueue;
+        const name = document.querySelector('[data-vname="'+ringNo+'"]').value.trim();
+        const date = document.querySelector('[data-vdate="'+ringNo+'"]').value;
+        const remark = document.querySelector('[data-vremark="'+ringNo+'"]').value.trim();
+        if (!name) { alert("请填写疫苗名称"); return; }
+        if (!date) { alert("请选择接种日期"); return; }
+        addToQueue("add_vaccine", { ringNo, name, date, remark });
+        document.querySelector('[data-vname="'+ringNo+'"]').value = '';
+        document.querySelector('[data-vdate="'+ringNo+'"]').value = '';
+        document.querySelector('[data-vremark="'+ringNo+'"]').value = '';
+        alert("已加入离线队列");
+      });
+      document.querySelectorAll("[data-transfer-queue]").forEach(btn => btn.onclick = () => {
+        const ringNo = btn.dataset.transferQueue;
+        const to = document.querySelector('[data-to="'+ringNo+'"]').value.trim();
+        if (!to) { alert("请输入新归属人"); return; }
+        addToQueue("add_transfer", { ringNo, to });
+        document.querySelector('[data-to="'+ringNo+'"]').value = '';
+        alert("已加入离线队列");
       });
     }
     function renderRelation(data) {
@@ -1533,8 +1666,26 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     };
     form.onsubmit = async event => {
       event.preventDefault();
-      await api("/api/pigeons", { method:"POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
-      form.reset(); await load();
+      try {
+        await api("/api/pigeons", { method:"POST", body: JSON.stringify(Object.fromEntries(new FormData(form).entries())) });
+        form.reset(); await load();
+      } catch(e) {
+        if (confirm("提交失败：" + e.message + "\\n\\n是否加入离线队列，稍后重试？")) {
+          const data = Object.fromEntries(new FormData(form).entries());
+          addToQueue("create_pigeon", data);
+          alert("已加入离线队列");
+        }
+      }
+    };
+    document.querySelector("#addToQueueBtn").onclick = () => {
+      const data = Object.fromEntries(new FormData(form).entries());
+      if (!data.ringNo || !data.owner || !data.color || !data.loft) {
+        alert("请填写必填项：足环号、鸽主、羽色、棚号");
+        return;
+      }
+      addToQueue("create_pigeon", data);
+      form.reset();
+      alert("已加入离线队列");
     };
     const importModal = document.querySelector("#importModal");
     const csvInput = document.querySelector("#csvInput");
@@ -2109,8 +2260,29 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         });
         handleSubmitResult(res, results);
       } catch(e) {
-        alert("提交失败：" + e.message);
+        if (confirm("提交失败：" + e.message + "\\n\\n是否加入离线队列，稍后重试？")) {
+          results.forEach(r => addToQueue("add_race_result", { eventId: currentRaceEventId, ...r }));
+          alert("已加入离线队列");
+          entryRows = [];
+          renderEntryTable();
+        }
       }
+    };
+    document.querySelector("#queueEntryBtn").onclick = () => {
+      if (!currentRaceEventId) { alert("请先选择赛事"); return; }
+      const validRows = entryRows.filter(r => r.ringNo && r.ringNo.trim());
+      if (validRows.length === 0) { alert("请至少录入一条有效成绩"); return; }
+      validRows.forEach(r => {
+        addToQueue("add_race_result", {
+          eventId: currentRaceEventId,
+          ringNo: r.ringNo.trim(),
+          returnTime: r.returnTime || "",
+          rank: Number(r.rank || 0)
+        });
+      });
+      entryRows = [];
+      renderEntryTable();
+      alert("已加入离线队列（" + validRows.length + " 条）");
     };
     function handleSubmitResult(res, results) {
       if (res.duplicate) {
@@ -2736,7 +2908,334 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         load();
       };
     }
+    const syncQueueModal = document.querySelector("#syncQueueModal");
+    const syncQueueBadge = document.querySelector("#syncQueueBadge");
+    const queueList = document.querySelector("#queueList");
+    let currentQueueTab = "all";
+    const QUEUE_STORAGE_KEY = "syncQueue";
+    const TYPE_LABELS = {
+      create_pigeon: "创建档案",
+      add_transfer: "转让申请",
+      add_vaccine: "疫苗记录",
+      add_race_result: "成绩录入"
+    };
+    const STATUS_LABELS = {
+      pending: "待同步",
+      syncing: "同步中",
+      success: "成功",
+      failed: "失败",
+      conflict: "冲突"
+    };
+    function getQueue() {
+      try {
+        return JSON.parse(localStorage.getItem(QUEUE_STORAGE_KEY) || "[]");
+      } catch(e) { return []; }
+    }
+    function saveQueue(queue) {
+      localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue));
+      updateQueueBadge();
+    }
+    function updateQueueBadge() {
+      const queue = getQueue();
+      const pendingCount = queue.filter(item => item.status === "pending" || item.status === "failed" || item.status === "conflict").length;
+      if (pendingCount > 0) {
+        syncQueueBadge.style.display = "flex";
+        syncQueueBadge.textContent = pendingCount;
+      } else {
+        syncQueueBadge.style.display = "none";
+      }
+    }
+    function addToQueue(type, data) {
+      const queue = getQueue();
+      const item = {
+        clientId: Date.now().toString() + Math.random().toString(36).slice(2, 8),
+        type,
+        data,
+        status: "pending",
+        error: null,
+        conflict: null,
+        createdAt: new Date().toISOString(),
+        syncedAt: null
+      };
+      queue.unshift(item);
+      saveQueue(queue);
+      return item;
+    }
+    function updateQueueItem(clientId, updates) {
+      const queue = getQueue();
+      const idx = queue.findIndex(item => item.clientId === clientId);
+      if (idx !== -1) {
+        queue[idx] = { ...queue[idx], ...updates };
+        saveQueue(queue);
+      }
+    }
+    function removeFromQueue(clientId) {
+      const queue = getQueue().filter(item => item.clientId !== clientId);
+      saveQueue(queue);
+    }
+    function clearSuccessful() {
+      const queue = getQueue().filter(item => item.status !== "success");
+      saveQueue(queue);
+    }
+    function clearAllQueue() {
+      if (!confirm("确定要清空队列中的所有项吗？")) return;
+      saveQueue([]);
+    }
+    function getQueueTitle(item) {
+      const data = item.data || {};
+      switch(item.type) {
+        case "create_pigeon":
+          return data.ringNo || "新鸽只";
+        case "add_transfer":
+          return data.ringNo + " → " + (data.to || "");
+        case "add_vaccine":
+          return data.ringNo + " · " + (data.name || "疫苗");
+        case "add_race_result":
+          return data.ringNo + " · 第" + (data.rank || "-") + "名";
+        default:
+          return item.type;
+      }
+    }
+    function renderQueue() {
+      const queue = getQueue();
+      const filtered = queue.filter(item => {
+        if (currentQueueTab === "all") return true;
+        return item.status === currentQueueTab;
+      });
+      const total = queue.length;
+      const success = queue.filter(i => i.status === "success").length;
+      const failed = queue.filter(i => i.status === "failed").length;
+      const conflict = queue.filter(i => i.status === "conflict").length;
+      const pending = queue.filter(i => i.status === "pending").length;
+      document.querySelector("#queueTotal").textContent = total;
+      document.querySelector("#queueSuccess").textContent = success;
+      document.querySelector("#queueFailed").textContent = failed;
+      document.querySelector("#queueConflict").textContent = conflict;
+      document.querySelector("#tabCountAll").textContent = total;
+      document.querySelector("#tabCountPending").textContent = pending;
+      document.querySelector("#tabCountSuccess").textContent = success;
+      document.querySelector("#tabCountFailed").textContent = failed;
+      document.querySelector("#tabCountConflict").textContent = conflict;
+      if (filtered.length === 0) {
+        queueList.innerHTML = '<div class="queue-empty">暂无记录</div>';
+        return;
+      }
+      queueList.innerHTML = filtered.map(item => {
+        const typeLabel = TYPE_LABELS[item.type] || item.type;
+        const title = getQueueTitle(item);
+        const statusLabel = STATUS_LABELS[item.status] || item.status;
+        const meta = item.createdAt ? "创建时间：" + new Date(item.createdAt).toLocaleString("zh-CN") : "";
+        const syncedMeta = item.syncedAt ? " · 同步时间：" + new Date(item.syncedAt).toLocaleString("zh-CN") : "";
+        let errorHtml = "";
+        let conflictHtml = "";
+        let diffHtml = "";
+        let actionsHtml = "";
+        if (item.status === "failed" && item.error) {
+          errorHtml = '<div class="queue-item-error">错误：' + (item.error.message || item.error.code || "未知错误") + '</div>';
+        }
+        if (item.status === "conflict" && item.conflict) {
+          conflictHtml = '<div class="queue-item-conflict">⚠ ' + (item.conflict.message || "数据冲突") + '</div>';
+          if (item.conflict.diffFields && item.conflict.diffFields.length > 0) {
+            diffHtml = '<div class="queue-diff-section"><div class="queue-diff-title">数据差异对比</div><table class="queue-diff-table"><thead><tr><th>字段</th><th>本地数据</th><th>服务器数据</th></tr></thead><tbody>' +
+              item.conflict.diffFields.map(d => '<tr><td class="col-field">' + (d.label || d.field) + '</td><td class="col-local">' + (d.local === undefined || d.local === null ? "(空)" : String(d.local)) + '</td><td class="col-server">' + (d.server === undefined || d.server === null ? "(空)" : String(d.server)) + '</td></tr>').join("") +
+              '</tbody></table></div>';
+          }
+        }
+        if (item.status === "pending" || item.status === "failed" || item.status === "conflict") {
+          const retryBtn = '<button class="btn-small" data-retry="' + item.clientId + '">重试</button>';
+          const skipBtn = '<button class="btn-small secondary" data-skip="' + item.clientId + '">跳过</button>';
+          const forceBtn = item.status === "conflict" && item.conflict && item.conflict.forceable ? '<button class="btn-small" data-force="' + item.clientId + '" style="background:var(--yellow);">强制同步</button>' : '';
+          const deleteBtn = '<button class="btn-icon danger" data-del-queue="' + item.clientId + '">删除</button>';
+          actionsHtml = '<div class="queue-item-actions">' + retryBtn + (item.status === "conflict" ? forceBtn : '') + skipBtn + deleteBtn + '</div>';
+        } else if (item.status === "success") {
+          actionsHtml = '<div class="queue-item-actions"><button class="btn-icon danger" data-del-queue="' + item.clientId + '">删除</button></div>';
+        }
+        return '<div class="queue-item ' + item.status + '">' +
+          '<div class="queue-item-header">' +
+            '<div class="queue-item-title"><span class="queue-item-type">' + typeLabel + '</span>' + title + '</div>' +
+            '<span class="status-badge ' + item.status + '">' + statusLabel + '</span>' +
+          '</div>' +
+          '<div class="queue-item-meta">' + meta + syncedMeta + '</div>' +
+          errorHtml + conflictHtml + diffHtml +
+          actionsHtml +
+          '</div>';
+      }).join("");
+      queueList.querySelectorAll("[data-retry]").forEach(btn => {
+        btn.onclick = () => retrySingle(btn.dataset.retry);
+      });
+      queueList.querySelectorAll("[data-skip]").forEach(btn => {
+        btn.onclick = () => skipItem(btn.dataset.skip);
+      });
+      queueList.querySelectorAll("[data-force]").forEach(btn => {
+        btn.onclick = () => forceSyncSingle(btn.dataset.force);
+      });
+      queueList.querySelectorAll("[data-del-queue]").forEach(btn => {
+        btn.onclick = () => {
+          if (confirm("确定删除此项吗？")) {
+            removeFromQueue(btn.dataset.delQueue);
+            renderQueue();
+          }
+        };
+      });
+    }
+    async function syncAll() {
+      const queue = getQueue();
+      const pendingItems = queue.filter(item => item.status === "pending" || item.status === "failed" || item.status === "conflict");
+      if (pendingItems.length === 0) {
+        alert("没有需要同步的项");
+        return;
+      }
+      const btn = document.querySelector("#syncAllBtn");
+      btn.disabled = true;
+      btn.textContent = "同步中...";
+      try {
+        const result = await api("/api/sync", {
+          method: "POST",
+          body: JSON.stringify({ items: pendingItems.map(i => ({ clientId: i.clientId, type: i.type, data: i.data })) })
+        });
+        processSyncResults(result.results);
+      } catch(e) {
+        alert("同步失败：" + e.message);
+      }
+      btn.disabled = false;
+      btn.textContent = "全部同步";
+    }
+    async function retrySingle(clientId) {
+      const queue = getQueue();
+      const item = queue.find(i => i.clientId === clientId);
+      if (!item) return;
+      updateQueueItem(clientId, { status: "syncing", error: null, conflict: null });
+      renderQueue();
+      try {
+        const result = await api("/api/sync", {
+          method: "POST",
+          body: JSON.stringify({ items: [{ clientId: item.clientId, type: item.type, data: item.data }] })
+        });
+        processSyncResults(result.results);
+      } catch(e) {
+        updateQueueItem(clientId, { status: "failed", error: { code: "network_error", message: e.message } });
+        renderQueue();
+      }
+    }
+    async function forceSyncSingle(clientId) {
+      const queue = getQueue();
+      const item = queue.find(i => i.clientId === clientId);
+      if (!item) return;
+      if (!confirm("确定要强制同步此项吗？这将覆盖服务器上的现有数据。")) return;
+      updateQueueItem(clientId, { status: "syncing", error: null, conflict: null });
+      renderQueue();
+      try {
+        const result = await api("/api/sync", {
+          method: "POST",
+          body: JSON.stringify({
+            items: [{ clientId: item.clientId, type: item.type, data: item.data }],
+            forceItemIds: [clientId]
+          })
+        });
+        processSyncResults(result.results);
+      } catch(e) {
+        updateQueueItem(clientId, { status: "failed", error: { code: "network_error", message: e.message } });
+        renderQueue();
+      }
+    }
+    function skipItem(clientId) {
+      updateQueueItem(clientId, { status: "success", error: null, conflict: null, syncedAt: new Date().toISOString() });
+      renderQueue();
+    }
+    function processSyncResults(results) {
+      results.forEach(result => {
+        const updates = {
+          status: result.status,
+          error: result.error,
+          conflict: result.conflict,
+          syncedAt: new Date().toISOString()
+        };
+        if (result.data) {
+          updates.serverData = result.data;
+        }
+        updateQueueItem(result.clientId, updates);
+      });
+      renderQueue();
+      if (results.some(r => r.status === "success")) {
+        load();
+      }
+    }
+    async function forceAllConflicts() {
+      const queue = getQueue();
+      const conflictItems = queue.filter(item => item.status === "conflict" && item.conflict && item.conflict.forceable);
+      if (conflictItems.length === 0) {
+        alert("没有可强制同步的冲突项");
+        return;
+      }
+      if (!confirm("确定要强制同步所有 " + conflictItems.length + " 个冲突项吗？这将覆盖服务器上的现有数据。")) return;
+      const btn = document.querySelector("#forceAllBtn");
+      btn.disabled = true;
+      btn.textContent = "强制同步中...";
+      try {
+        const result = await api("/api/sync", {
+          method: "POST",
+          body: JSON.stringify({
+            items: conflictItems.map(i => ({ clientId: i.clientId, type: i.type, data: i.data })),
+            forceItemIds: conflictItems.map(i => i.clientId)
+          })
+        });
+        processSyncResults(result.results);
+      } catch(e) {
+        alert("强制同步失败：" + e.message);
+      }
+      btn.disabled = false;
+      btn.textContent = "强制同步冲突";
+    }
+    async function retryFailed() {
+      const queue = getQueue();
+      const failedItems = queue.filter(item => item.status === "failed");
+      if (failedItems.length === 0) {
+        alert("没有失败的项");
+        return;
+      }
+      const btn = document.querySelector("#retryFailedBtn");
+      btn.disabled = true;
+      btn.textContent = "重试中...";
+      try {
+        const result = await api("/api/sync", {
+          method: "POST",
+          body: JSON.stringify({ items: failedItems.map(i => ({ clientId: i.clientId, type: i.type, data: i.data })) })
+        });
+        processSyncResults(result.results);
+      } catch(e) {
+        alert("重试失败：" + e.message);
+      }
+      btn.disabled = false;
+      btn.textContent = "重试失败";
+    }
+    document.querySelector("#syncQueueBtn").onclick = () => {
+      syncQueueModal.style.display = "block";
+      renderQueue();
+    };
+    document.querySelector("#closeSyncQueue").onclick = () => {
+      syncQueueModal.style.display = "none";
+    };
+    document.querySelectorAll(".queue-tab").forEach(tab => {
+      tab.onclick = () => {
+        currentQueueTab = tab.dataset.queueTab;
+        document.querySelectorAll(".queue-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        renderQueue();
+      };
+    });
+    document.querySelector("#syncAllBtn").onclick = syncAll;
+    document.querySelector("#retryFailedBtn").onclick = retryFailed;
+    document.querySelector("#forceAllBtn").onclick = forceAllConflicts;
+    document.querySelector("#clearSuccessBtn").onclick = () => {
+      clearSuccessful();
+      renderQueue();
+    };
+    document.querySelector("#clearAllBtn").onclick = () => {
+      clearAllQueue();
+      renderQueue();
+    };
     load();
+    updateQueueBadge();
   </script>
 </body>
 </html>`;
@@ -3283,6 +3782,226 @@ const server = http.createServer(async (req, res) => {
         await saveDb(db);
       }
       return sendJson(res, 200, result);
+    }
+    if (req.method === "POST" && url.pathname === "/api/sync") {
+      const input = await body(req);
+      const items = Array.isArray(input.items) ? input.items : [];
+      const forceItemIds = Array.isArray(input.forceItemIds) ? input.forceItemIds : [];
+      const results = [];
+      for (const item of items) {
+        const result = { clientId: item.clientId, type: item.type, status: "success", data: null, error: null, conflict: null };
+        const isForced = forceItemIds.includes(item.clientId);
+        try {
+          if (item.type === "create_pigeon") {
+            const data = item.data || {};
+            const ringNo = (data.ringNo || "").trim();
+            const existing = db.pigeons.find(p => p.ringNo === ringNo);
+            if (existing && !isForced) {
+              result.status = "conflict";
+              result.conflict = {
+                type: "ring_exists",
+                message: "足环号已存在",
+                localData: { ringNo: data.ringNo, owner: data.owner, color: data.color, loft: data.loft, fatherRing: data.fatherRing, motherRing: data.motherRing },
+                serverData: { ringNo: existing.ringNo, owner: existing.owner, color: existing.color, loft: existing.loft, fatherRing: existing.fatherRing, motherRing: existing.motherRing },
+                diffFields: computeDiffFields(
+                  { ringNo: data.ringNo, owner: data.owner, color: data.color, loft: data.loft, fatherRing: data.fatherRing || "", motherRing: data.motherRing || "" },
+                  { ringNo: existing.ringNo, owner: existing.owner, color: existing.color, loft: existing.loft, fatherRing: existing.fatherRing || "", motherRing: existing.motherRing || "" }
+                ),
+                forceable: true
+              };
+              results.push(result);
+              continue;
+            }
+            if (existing && isForced) {
+              const idx = db.pigeons.findIndex(p => p.ringNo === ringNo);
+              const updated = {
+                ...existing,
+                owner: data.owner !== undefined ? data.owner : existing.owner,
+                color: data.color !== undefined ? data.color : existing.color,
+                loft: data.loft !== undefined ? data.loft : existing.loft,
+                fatherRing: data.fatherRing !== undefined ? data.fatherRing : existing.fatherRing,
+                motherRing: data.motherRing !== undefined ? data.motherRing : existing.motherRing
+              };
+              db.pigeons[idx] = updated;
+              result.data = updated;
+            } else {
+              const pigeon = {
+                ringNo: data.ringNo,
+                owner: data.owner,
+                fatherRing: data.fatherRing || "",
+                motherRing: data.motherRing || "",
+                color: data.color,
+                loft: data.loft,
+                vaccines: [],
+                transfers: [],
+                races: []
+              };
+              db.pigeons.unshift(pigeon);
+              result.data = pigeon;
+            }
+          } else if (item.type === "add_transfer") {
+            const data = item.data || {};
+            const ringNo = data.ringNo;
+            const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+            if (!pigeon) {
+              result.status = "failed";
+              result.error = { code: "pigeon_not_found", message: "鸽只不存在" };
+              results.push(result);
+              continue;
+            }
+            const to = (data.to || "").trim();
+            if (!to) {
+              result.status = "failed";
+              result.error = { code: "invalid_to", message: "新归属人不能为空" };
+              results.push(result);
+              continue;
+            }
+            if (to === pigeon.owner) {
+              result.status = "failed";
+              result.error = { code: "same_owner", message: "新归属人与当前鸽主相同" };
+              results.push(result);
+              continue;
+            }
+            const hasPending = pigeon.transfers.some(t => t.status === "pending");
+            if (hasPending && !isForced) {
+              const pendingTransfer = pigeon.transfers.find(t => t.status === "pending");
+              result.status = "conflict";
+              result.conflict = {
+                type: "pending_transfer_exists",
+                message: "该鸽只已有待确认的转让申请",
+                localData: { from: pigeon.owner, to: to, date: data.date || new Date().toISOString().slice(0, 10) },
+                serverData: { from: pendingTransfer.from, to: pendingTransfer.to, date: pendingTransfer.date, status: pendingTransfer.status },
+                diffFields: computeDiffFields(
+                  { from: pigeon.owner, to: to },
+                  { from: pendingTransfer.from, to: pendingTransfer.to }
+                ),
+                forceable: true
+              };
+              results.push(result);
+              continue;
+            }
+            if (hasPending && isForced) {
+              const idx = pigeon.transfers.findIndex(t => t.status === "pending");
+              pigeon.transfers.splice(idx, 1);
+            }
+            const today = localDateString();
+            const transfer = {
+              id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+              date: data.date || today,
+              from: pigeon.owner,
+              to,
+              status: "pending",
+              createdAt: today,
+              confirmedAt: null,
+              cancelledAt: null
+            };
+            pigeon.transfers.push(transfer);
+            result.data = transfer;
+          } else if (item.type === "add_vaccine") {
+            const data = item.data || {};
+            const ringNo = data.ringNo;
+            const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+            if (!pigeon) {
+              result.status = "failed";
+              result.error = { code: "pigeon_not_found", message: "鸽只不存在" };
+              results.push(result);
+              continue;
+            }
+            const name = (data.name || "").trim();
+            if (!name) {
+              result.status = "failed";
+              result.error = { code: "invalid_name", message: "疫苗名称不能为空" };
+              results.push(result);
+              continue;
+            }
+            const vaccine = {
+              date: data.date || new Date().toISOString().slice(0, 10),
+              name,
+              remark: data.remark || ""
+            };
+            const dupIndex = pigeon.vaccines.findIndex(v => v.date === vaccine.date && v.name === vaccine.name);
+            if (dupIndex !== -1 && !isForced) {
+              result.status = "conflict";
+              result.conflict = {
+                type: "duplicate_vaccine",
+                message: "相同日期和名称的疫苗记录已存在",
+                localData: vaccine,
+                serverData: pigeon.vaccines[dupIndex],
+                diffFields: computeDiffFields(vaccine, pigeon.vaccines[dupIndex]),
+                forceable: true
+              };
+              results.push(result);
+              continue;
+            }
+            if (dupIndex !== -1 && isForced) {
+              pigeon.vaccines[dupIndex] = vaccine;
+            } else {
+              pigeon.vaccines.push(vaccine);
+            }
+            result.data = vaccine;
+          } else if (item.type === "add_race_result") {
+            const data = item.data || {};
+            const eventId = data.eventId;
+            const event = db.raceEvents.find(e => e.id === eventId);
+            if (!event) {
+              result.status = "failed";
+              result.error = { code: "event_not_found", message: "赛事不存在" };
+              results.push(result);
+              continue;
+            }
+            const ringNo = (data.ringNo || "").trim();
+            const validRingNos = new Set(db.pigeons.map(p => p.ringNo));
+            if (!validRingNos.has(ringNo)) {
+              result.status = "failed";
+              result.error = { code: "pigeon_not_found", message: "足环号不在档案中" };
+              results.push(result);
+              continue;
+            }
+            const existing = event.results.find(r => r.ringNo === ringNo);
+            const raceResult = {
+              ringNo,
+              returnTime: data.returnTime || "",
+              rank: Number(data.rank || 0)
+            };
+            if (existing && !isForced) {
+              result.status = "conflict";
+              result.conflict = {
+                type: "race_result_exists",
+                message: "该鸽只在本赛事中已有成绩记录",
+                localData: raceResult,
+                serverData: { ringNo: existing.ringNo, returnTime: existing.returnTime, rank: existing.rank },
+                diffFields: computeDiffFields(raceResult, { ringNo: existing.ringNo, returnTime: existing.returnTime, rank: existing.rank }),
+                forceable: true
+              };
+              results.push(result);
+              continue;
+            }
+            if (existing && isForced) {
+              const idx = event.results.findIndex(r => r.ringNo === ringNo);
+              event.results[idx] = raceResult;
+            } else {
+              event.results.push(raceResult);
+            }
+            result.data = raceResult;
+          } else {
+            result.status = "failed";
+            result.error = { code: "unknown_type", message: "未知的同步类型" };
+          }
+        } catch (e) {
+          result.status = "failed";
+          result.error = { code: "server_error", message: e.message };
+        }
+        results.push(result);
+      }
+      const hasSuccess = results.some(r => r.status === "success");
+      if (hasSuccess) await saveDb(db);
+      const summary = {
+        total: results.length,
+        success: results.filter(r => r.status === "success").length,
+        failed: results.filter(r => r.status === "failed").length,
+        conflict: results.filter(r => r.status === "conflict").length
+      };
+      return sendJson(res, 200, { results, summary });
     }
     sendJson(res, 404, { error: "not_found" });
   } catch (error) {
