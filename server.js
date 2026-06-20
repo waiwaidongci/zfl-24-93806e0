@@ -119,7 +119,7 @@ const PEDIGREE_MAX_UP_LEVEL = 10;
 const PEDIGREE_MAX_DOWN_LEVEL = 10;
 const PEDIGREE_DEFAULT_UP_LEVEL = 2;
 const PEDIGREE_DEFAULT_DOWN_LEVEL = 1;
-const PEDIGREE_MAX_NODES_PER_REQUEST = 500;
+const PEDIGREE_MAX_NODES_PER_REQUEST = 2000;
 
 function buildPedigreeNode(db, ringNo, level, direction, maxLevel, visited, path, options, stats) {
   stats.nodesBuilt++;
@@ -132,6 +132,7 @@ function buildPedigreeNode(db, ringNo, level, direction, maxLevel, visited, path
       circularVia: null,
       isTruncated: true,
       level,
+      direction,
       father: null,
       mother: null,
       children: []
@@ -225,8 +226,14 @@ function buildPedigree(db, ringNo, upLevel, downLevel) {
   const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
   if (!pigeon) return null;
 
-  const safeUpLevel = Math.min(Math.max(0, upLevel || PEDIGREE_DEFAULT_UP_LEVEL), PEDIGREE_MAX_UP_LEVEL);
-  const safeDownLevel = Math.min(Math.max(0, downLevel || PEDIGREE_DEFAULT_DOWN_LEVEL), PEDIGREE_MAX_DOWN_LEVEL);
+  const safeUpLevel = Math.min(
+    Math.max(0, upLevel !== undefined && upLevel !== null && !isNaN(upLevel) ? upLevel : PEDIGREE_DEFAULT_UP_LEVEL),
+    PEDIGREE_MAX_UP_LEVEL
+  );
+  const safeDownLevel = Math.min(
+    Math.max(0, downLevel !== undefined && downLevel !== null && !isNaN(downLevel) ? downLevel : PEDIGREE_DEFAULT_DOWN_LEVEL),
+    PEDIGREE_MAX_DOWN_LEVEL
+  );
 
   const stats = { nodesBuilt: 0, cyclesFound: 0, missingFound: 0 };
 
@@ -1500,6 +1507,13 @@ const page = `<!doctype html>
     .pedigree-breadcrumb .crumb { background:#eef3f7; border:1px solid var(--line); padding:3px 10px; border-radius:999px; color:var(--accent); cursor:pointer; }
     .pedigree-breadcrumb .crumb.current { background:var(--accent); color:#fff; cursor:default; }
     .pedigree-breadcrumb .sep { color:var(--muted); }
+    .pedigree-node.highlighted { border-color:var(--accent); border-width:3px; background:#f0f5fa; box-shadow:0 0 0 3px rgba(52,120,180,0.15); }
+    .pedigree-node .highlight-tag { display:inline-block; background:var(--accent); color:#fff; font-size:10px; padding:1px 6px; border-radius:4px; margin-top:4px; font-weight:700; }
+    .pedigree-highlight-banner { margin-bottom:14px; padding:10px 14px; background:#eaf3fb; border:1px solid var(--accent); border-radius:8px; font-size:13px; display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+    @keyframes pedigree-pulse {
+      0%,100% { box-shadow:0 0 0 3px rgba(52,120,180,0.15); }
+      50% { box-shadow:0 0 0 8px rgba(52,120,180,0.3); }
+    }
     .transfer-list { display:grid; gap:6px; margin-top:8px; }
     .transfer-item { background:#f8fafb; border:1px solid var(--line); border-radius:6px; padding:8px 10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; }
     .transfer-item .transfer-info { font-size:13px; }
@@ -3130,6 +3144,9 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     const PEDIGREE_BATCH_SIZE = 50;
     let pedigreeHistory = [];
     let currentPedigreeData = null;
+    let pendingHighlightRingSet = null;
+    let pendingHighlightPath = "";
+    let activeHighlightRingSet = null;
 
     function getRoleLabel(level, side, parentSide) {
       if (level === 0) return "本鸽";
@@ -3147,12 +3164,18 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       return (level + "代") + prefix + "系";
     }
 
-    function renderPedigreeNode(node, roleLabel) {
+    function renderPedigreeNode(node, roleLabel, highlightSet) {
       let classes = "pedigree-node";
       let ringDisplay = "未登记";
       let infoDisplay = "";
       let circularTag = "";
       let truncatedTag = "";
+      let highlightTag = "";
+      const isHighlighted = highlightSet && highlightSet.has && highlightSet.has(node.ringNo);
+      if (isHighlighted) {
+        classes += " highlighted";
+        highlightTag = '<div class="highlight-tag">★ 循环节点</div>';
+      }
       if (node.isTruncated) {
         classes += " truncated";
         ringDisplay = node.ringNo || "数据截断";
@@ -3173,12 +3196,14 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         classes += " missing";
       }
       const dataAttr = (node.exists && !node.isCircular && !node.isTruncated) ? ' data-pedigree-jump="' + node.ringNo + '"' : '';
-      return '<div class="' + classes + '"' + dataAttr + '>' +
+      const dataHighlight = isHighlighted ? ' data-pedigree-highlight="1"' : '';
+      return '<div class="' + classes + '"' + dataAttr + dataHighlight + '>' +
         '<div class="role">' + roleLabel + '</div>' +
         '<div class="ring">' + ringDisplay + '</div>' +
         (infoDisplay ? '<div class="info">' + infoDisplay + '</div>' : '') +
         circularTag +
         truncatedTag +
+        highlightTag +
       '</div>';
     }
 
@@ -3226,6 +3251,13 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       const { root, stats, config } = fullData;
       currentPedigreeData = fullData;
 
+      const highlightSet = pendingHighlightRingSet;
+      activeHighlightRingSet = pendingHighlightRingSet;
+      pendingHighlightRingSet = null;
+
+      const highlightPathStr = pendingHighlightPath;
+      pendingHighlightPath = "";
+
       const maxUpLevel = config.upLevel;
       const maxDownLevel = config.downLevel;
 
@@ -3237,11 +3269,20 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         const levelData = upLevels[l] || [];
         const levelNodes = levelData.map(item => {
           const roleLabel = getRoleLabel(l, item.side, item.parentSide);
-          return renderPedigreeNode(item.node, roleLabel);
+          return renderPedigreeNode(item.node, roleLabel, highlightSet);
         }).join("");
         upTreeHtml += '<div class="pedigree-row level-' + l + '">' + levelNodes + '</div>';
       }
       upTreeHtml += '</div>';
+
+      let highlightBannerHtml = "";
+      if (highlightSet && highlightPathStr) {
+        highlightBannerHtml = '<div class="pedigree-highlight-banner">' +
+          '<span style="font-weight:700;color:var(--accent);">★ 循环路径定位：</span>' +
+          '<span style="margin-left:8px;">' + highlightPathStr + '</span>' +
+          '<button id="clearPedigreeHighlight" class="secondary btn-small" style="margin-left:12px;">清除高亮</button>' +
+        '</div>';
+      }
 
       let downHtml = '<div class="pedigree-children">';
       if (downLevels.length > 0 && downLevels[0].length > 0) {
@@ -3253,7 +3294,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           const nodesToShow = levelData.slice(0, showCount);
           const levelNodes = nodesToShow.map(item => {
             const roleLabel = getRoleLabel(-levelNum, item.side, item.parentSide);
-            return renderPedigreeNode(item.node, roleLabel);
+            return renderPedigreeNode(item.node, roleLabel, highlightSet);
           }).join("");
 
           const moreBtnHtml = totalAtLevel > showCount
@@ -3274,11 +3315,40 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       }
       downHtml += '</div>';
 
-      pedigreeContent.innerHTML = upTreeHtml + downHtml;
+      pedigreeContent.innerHTML = highlightBannerHtml + upTreeHtml + downHtml;
       pedigreeLegend.style.display = "flex";
       renderPedigreeStats(stats, config);
       bindPedigreeEvents();
       bindDownLevelLoadMore();
+      bindHighlightClear();
+      scrollToHighlight();
+    }
+
+    function bindHighlightClear() {
+      const clearBtn = document.querySelector("#clearPedigreeHighlight");
+      if (clearBtn) {
+        clearBtn.onclick = function() {
+          activeHighlightRingSet = null;
+          document.querySelectorAll(".pedigree-node.highlighted").forEach(function(el) {
+            el.classList.remove("highlighted");
+          });
+          document.querySelectorAll(".highlight-tag").forEach(function(el) {
+            el.remove();
+          });
+          const banner = document.querySelector(".pedigree-highlight-banner");
+          if (banner) banner.remove();
+        };
+      }
+    }
+
+    function scrollToHighlight() {
+      setTimeout(function() {
+        const firstHighlighted = document.querySelector(".pedigree-node.highlighted");
+        if (firstHighlighted) {
+          firstHighlighted.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+          firstHighlighted.style.animation = "pedigree-pulse 2s ease-in-out 2";
+        }
+      }, 300);
     }
 
     function bindDownLevelLoadMore() {
@@ -3296,7 +3366,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
 
           const newHtml = nodesToAdd.map(item => {
             const roleLabel = getRoleLabel(-levelNum, item.side, item.parentSide);
-            return renderPedigreeNode(item.node, roleLabel);
+            return renderPedigreeNode(item.node, roleLabel, activeHighlightRingSet);
           }).join("");
 
           gridEl.insertAdjacentHTML("beforeend", newHtml);
@@ -3393,9 +3463,40 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       pedigreeReviewModal.style.display = "none";
       pedigreeModal.style.display = "block";
       pedigreeHistory = [];
+
+      const cyclePath = issue.detail?.cyclePath || [];
       const startRingNo = issue.detail?.startRingNo || issue.ringNo;
+
+      let requiredUpLevel = 0;
+      let requiredDownLevel = 0;
+      const cycleRingSet = new Set();
+
+      if (cyclePath.length > 0) {
+        cyclePath.forEach(function(p) { cycleRingSet.add(p.ringNo); });
+
+        const upCount = cyclePath.filter(function(p) {
+          return p.relation === "父" || p.relation === "母";
+        }).length;
+        const downCount = cyclePath.filter(function(p) {
+          return p.relation !== "本鸽" && p.relation !== "父" && p.relation !== "母";
+        }).length;
+
+        requiredUpLevel = Math.max(3, upCount + 2, Math.ceil(cyclePath.length / 2));
+        requiredDownLevel = Math.max(1, downCount + 1);
+      } else {
+        requiredUpLevel = 3;
+        requiredDownLevel = 1;
+      }
+
+      requiredUpLevel = Math.min(requiredUpLevel, 10);
+      requiredDownLevel = Math.min(requiredDownLevel, 10);
+
       pedigreeSearch.value = startRingNo;
-      pedigreeUpLevel.value = Math.max(3, parseInt(pedigreeUpLevel.value));
+      pedigreeUpLevel.value = String(requiredUpLevel);
+      pedigreeDownLevel.value = String(requiredDownLevel);
+      pendingHighlightRingSet = cycleRingSet;
+      pendingHighlightPath = issue.detail?.pathString || "";
+
       loadPedigree(startRingNo);
     }
 
