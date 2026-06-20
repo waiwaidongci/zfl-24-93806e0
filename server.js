@@ -1610,8 +1610,10 @@ CHN-2026-100,北岸棚,CHN-2022-188,CHN-2023-512,灰,北岸A棚
 CHN-2026-101,北岸棚,,雨点,北岸B棚
 CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           </details>
-          <div style="margin-top:14px; display:flex; gap:10px;">
+          <div style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap;">
             <button id="previewBtn">预览解析结果</button>
+            <button id="downloadTemplateBtn" class="secondary">↓ 下载CSV模板</button>
+            <button id="fillSampleBtn" class="secondary">✎ 填入示例数据并预览</button>
             <button id="clearBtn" class="secondary">清空</button>
           </div>
         </div>
@@ -2332,6 +2334,25 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     document.querySelector("#importBtn").onclick = () => { importModal.style.display = "block"; previewData = null; previewArea.innerHTML = ""; };
     document.querySelector("#closeImport").onclick = () => { importModal.style.display = "none"; };
     document.querySelector("#clearBtn").onclick = () => { csvInput.value = ""; previewArea.innerHTML = ""; previewData = null; };
+    document.querySelector("#downloadTemplateBtn").onclick = () => {
+      const a = document.createElement("a");
+      a.href = "/api/pigeons/import/template";
+      a.download = "";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    };
+    document.querySelector("#fillSampleBtn").onclick = async () => {
+      try {
+        const res = await fetch("/api/pigeons/import/sample");
+        const data = await res.json();
+        csvInput.value = data.csv || "";
+        const previewData = await api("/api/pigeons/import/preview", { method:"POST", body: JSON.stringify({ csv: csvInput.value }) });
+        renderPreview(previewData);
+      } catch(e) {
+        previewArea.innerHTML = '<div class="hint" style="color:var(--red); margin-top:12px;">填入示例数据失败：' + e.message + '</div>';
+      }
+    };
     const breedingModal = document.querySelector("#breedingModal");
     const breedingForm = document.querySelector("#breedingForm");
     const breedingPlanList = document.querySelector("#breedingPlanList");

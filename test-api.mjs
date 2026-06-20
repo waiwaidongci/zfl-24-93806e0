@@ -128,7 +128,19 @@ async function test() {
   console.log("--- 11. Get race events ---");
   const events = await api("GET", "/api/race-events");
   assert(events.status === 200, "赛事列表返回 200");
-  const eventId = events.data[0]?.id;
+  let eventId = events.data[0]?.id;
+  if (!eventId) {
+    console.log("\n--- 11b. 创建测试赛事 ---");
+    const createEvent = await api("POST", "/api/race-events", {
+      name: "接口测试赛事",
+      date: "2026-06-20",
+      distance: "300km",
+      location: "测试地点"
+    });
+    assert(createEvent.status === 201, "创建赛事返回 201");
+    eventId = createEvent.data.id;
+    assert(eventId !== undefined, "创建赛事后获得 eventId");
+  }
   if (eventId) {
     console.log("  First event id:", eventId);
 
@@ -306,7 +318,7 @@ async function test() {
   console.log("\n--- 19. 清理测试数据 ---");
   const cleanupEvents = await api("GET", "/api/race-events");
   for (const e of cleanupEvents.data) {
-    if (e.name === "合并测试赛事") {
+    if (e.name === "合并测试赛事" || e.name === "接口测试赛事") {
       await api("DELETE", "/api/race-events/" + e.id);
     }
   }
