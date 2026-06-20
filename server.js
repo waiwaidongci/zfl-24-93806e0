@@ -13,7 +13,8 @@ import {
 } from "./import-utils.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const dbPath = join(__dirname, "data", "pigeons.json");
+const defaultDbPath = join(__dirname, "data", "pigeons.json");
+const dbPath = process.env.DB_PATH || defaultDbPath;
 const port = Number(process.env.PORT || 3024);
 
 const seed = {

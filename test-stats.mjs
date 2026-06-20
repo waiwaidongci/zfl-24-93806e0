@@ -1,46 +1,11 @@
-import http from "node:http";
+import { fileURLToPath } from "node:url";
+import { api, createTestRunner, setupTestEnvironment } from "./test-utils.mjs";
 
-function api(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const data = body ? JSON.stringify(body) : null;
-    const options = {
-      hostname: "localhost",
-      port: 3024,
-      path,
-      method,
-      headers: data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}
-    };
-    const req = http.request(options, (res) => {
-      let chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        try {
-          resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString("utf-8")) });
-        } catch (e) {
-          resolve({ status: res.statusCode, data: Buffer.concat(chunks).toString("utf-8") });
-        }
-      });
-    });
-    req.on("error", reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-let passed = 0;
-let failed = 0;
-
-function assert(condition, label) {
-  if (condition) {
-    passed++;
-    console.log("  ✓ " + label);
-  } else {
-    failed++;
-    console.log("  ✗ " + label);
-  }
-}
+const { assert, printSummary, exitIfFailed, getResults } = createTestRunner("赛事统计");
 
 async function test() {
+  const env = await setupTestEnvironment();
+
   console.log("\n=== 赛事成绩统计功能验证 ===\n");
 
   console.log("--- 1. 创建赛事 ---");
@@ -133,11 +98,17 @@ async function test() {
   const deleteEventRes = await api("DELETE", `/api/race-events/${eventId}`);
   assert(deleteEventRes.status === 200, "删除赛事返回 200");
 
-  console.log("\n============================");
-  console.log(`通过: ${passed}  失败: ${failed}`);
-  console.log("============================\n");
-
-  if (failed > 0) process.exit(1);
+  printSummary();
+  await env.teardown();
+  exitIfFailed();
+  return getResults();
 }
 
-test().catch(console.error);
+export default test;
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  test().catch(err => {
+    console.error("测试执行出错:", err);
+    process.exit(1);
+  });
+}

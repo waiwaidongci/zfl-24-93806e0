@@ -4,6 +4,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+tmp/
+*.tmp.json
+
 .env
 .env.*
 !.env.example

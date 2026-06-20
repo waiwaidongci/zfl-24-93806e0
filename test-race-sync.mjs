@@ -1,44 +1,7 @@
-import http from "node:http";
+import { fileURLToPath } from "node:url";
+import { api, createTestRunner, setupTestEnvironment } from "./test-utils.mjs";
 
-function api(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const data = body ? JSON.stringify(body) : null;
-    const options = {
-      hostname: "localhost",
-      port: 3024,
-      path,
-      method,
-      headers: data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}
-    };
-    const req = http.request(options, (res) => {
-      let chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        try {
-          resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-        } catch (e) {
-          resolve({ status: res.statusCode, data: Buffer.concat(chunks).toString("utf8") });
-        }
-      });
-    });
-    req.on("error", reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
-
-let passed = 0;
-let failed = 0;
-
-function assert(condition, label) {
-  if (condition) {
-    passed++;
-    console.log("  ✓ " + label);
-  } else {
-    failed++;
-    console.log("  ✗ " + label);
-  }
-}
+const { assert, printSummary, exitIfFailed, getResults } = createTestRunner("成绩同步");
 
 let testEventId = null;
 const testRingNo1 = "CHN-2026-001";
@@ -51,6 +14,8 @@ async function getPigeon(ringNo) {
 }
 
 async function test() {
+  const env = await setupTestEnvironment();
+
   console.log("\n=== 成绩双向同步策略端到端验证 ===\n");
 
   console.log("--- 1. 创建测试赛事 ---");
@@ -346,7 +311,7 @@ async function test() {
 
   await api("DELETE", `/api/race-events/${gapEventId}`);
 
-  console.log("\n--- 15. 删除赛事 → 同步移除所有鸽只对应races ---");
+  console.log("\n--- 20. 删除赛事 → 同步移除所有鸽只对应races ---");
   const pigeon2BeforeEventDel = await getPigeon(testRingNo2);
   const hasRaceBeforeDel = pigeon2BeforeEventDel.races.some(r => r.event === "同步测试赛事（已更名）" && r.date === "2026-06-21");
   assert(hasRaceBeforeDel === true, "删除赛事前鸽只有对应races记录");
@@ -359,7 +324,7 @@ async function test() {
   const hasRaceAfterDel = pigeon2AfterEventDel.races.some(r => r.event === "同步测试赛事（已更名）" && r.date === "2026-06-21");
   assert(hasRaceAfterDel === false, "删除赛事后鸽只对应races记录已移除");
 
-  console.log("\n--- 16. 清理测试数据 ---");
+  console.log("\n--- 21. 清理测试数据 ---");
   await api("DELETE", `/api/pigeons/${encodeURIComponent(tempRingNo)}`).catch(() => {});
 
   const pigeon1Final = await getPigeon(testRingNo1);
@@ -371,14 +336,17 @@ async function test() {
     await api("DELETE", `/api/pigeons/${encodeURIComponent(testRingNo1)}/races/${idxToClean}`);
   }
 
-  console.log("\n============================");
-  console.log(`通过: ${passed}  失败: ${failed}`);
-  console.log("============================\n");
-
-  if (failed > 0) process.exit(1);
+  printSummary();
+  await env.teardown();
+  exitIfFailed();
+  return getResults();
 }
 
-test().catch(err => {
-  console.error("测试执行出错:", err);
-  process.exit(1);
-});
+export default test;
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  test().catch(err => {
+    console.error("测试执行出错:", err);
+    process.exit(1);
+  });
+}

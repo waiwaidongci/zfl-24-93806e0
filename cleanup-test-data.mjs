@@ -1,38 +1,9 @@
-import http from "node:http";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function api(method, path, body) {
-  return new Promise((resolve, reject) => {
-    const data = body ? JSON.stringify(body) : null;
-    const options = {
-      hostname: "localhost",
-      port: 3024,
-      path,
-      method,
-      headers: data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}
-    };
-    const req = http.request(options, (res) => {
-      let chunks = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => {
-        try {
-          resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-        } catch (e) {
-          resolve({ status: res.statusCode, data: Buffer.concat(chunks).toString("utf8") });
-        }
-      });
-    });
-    req.on("error", reject);
-    if (data) req.write(data);
-    req.end();
-  });
-}
+import { api, setupTestEnvironment } from "./test-utils.mjs";
 
 async function cleanup() {
+  const env = await setupTestEnvironment({ autoStart: false });
+
   console.log("=== 清理测试残留数据 ===\n");
 
   console.log("1. 获取所有赛事...");
@@ -94,6 +65,12 @@ async function cleanup() {
   });
 
   console.log("\n=== 清理完成 ===");
+  await env.teardown();
 }
 
-cleanup().catch(console.error);
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  cleanup().catch(err => {
+    console.error("清理出错:", err);
+    process.exit(1);
+  });
+}

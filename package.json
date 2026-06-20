@@ -4,6 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node run-tests.mjs",
+    "test:serial": "node run-tests.mjs --serial",
+    "test:parallel": "node run-tests.mjs --parallel",
+    "test:list": "node run-tests.mjs --list",
+    "test:help": "node run-tests.mjs --help",
+    "test:vaccine": "node run-tests.mjs 疫苗CRUD",
+    "test:stats": "node run-tests.mjs 赛事统计",
+    "test:sync": "node run-tests.mjs 成绩同步",
+    "test:import": "node run-tests.mjs 批量导入",
+    "cleanup": "node cleanup-test-data.mjs"
   }
 }
