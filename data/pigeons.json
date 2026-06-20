@@ -1,45 +1,6 @@
 {
   "pigeons": [
     {
-      "ringNo": "QUEUE-TEST-001",
-      "owner": "测试鸽主",
-      "fatherRing": "",
-      "motherRing": "",
-      "color": "灰",
-      "loft": "测试棚",
-      "vaccines": [],
-      "transfers": [],
-      "races": []
-    },
-    {
-      "ringNo": "TEST-001",
-      "owner": "冲突鸽主",
-      "fatherRing": "",
-      "motherRing": "",
-      "color": "红轮",
-      "loft": "冲突棚",
-      "vaccines": [
-        {
-          "date": "2026-06-01",
-          "name": "新城疫",
-          "remark": "测试"
-        }
-      ],
-      "transfers": [
-        {
-          "id": "1781916287948sdmy",
-          "date": "2026-06-20",
-          "from": "强制更新鸽主",
-          "to": "新鸽主",
-          "status": "pending",
-          "createdAt": "2026-06-20",
-          "confirmedAt": null,
-          "cancelledAt": null
-        }
-      ],
-      "races": []
-    },
-    {
       "ringNo": "CHN-2026-001",
       "owner": "北岸棚",
       "fatherRing": "CHN-2022-188",
@@ -59,7 +20,7 @@
           "from": "育种棚",
           "to": "北岸棚",
           "status": "confirmed",
-          "id": "1781833087565ui7a",
+          "id": "init-trans-001",
           "createdAt": "2026-04-15",
           "confirmedAt": "2026-04-15",
           "cancelledAt": null
@@ -82,7 +43,13 @@
       "motherRing": "",
       "color": "雨点",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-05-15",
+          "name": "鸽痘",
+          "remark": "春季接种"
+        }
+      ],
       "transfers": [],
       "races": []
     },
@@ -93,32 +60,41 @@
       "motherRing": "",
       "color": "红轮",
       "loft": "种鸽棚",
-      "vaccines": [],
+      "vaccines": [
+        {
+          "date": "2026-03-20",
+          "name": "新城疫",
+          "remark": "基础免疫"
+        }
+      ],
       "transfers": [],
       "races": []
     }
   ],
   "breedingPlans": [],
-  "raceEvents": [],
-  "syncQueue": [
+  "raceEvents": [
     {
-      "id": "1781833087566ws5pey",
-      "type": "create_pigeon",
-      "typeLabel": "创建档案",
-      "payload": {
-        "ringNo": "CHN-2026-001",
-        "owner": "测试鸽主",
-        "fatherRing": "",
-        "motherRing": "",
-        "color": "雨点",
-        "loft": "测试棚"
-      },
-      "status": "pending",
-      "retryCount": 0,
-      "createdAt": "2026-06-19",
-      "syncedAt": null,
-      "error": null,
-      "conflict": null
+      "id": "1781798833195",
+      "name": "统计测试赛事",
+      "date": "2026-06-18",
+      "distance": 200,
+      "results": [
+        {
+          "ringNo": "CHN-2026-001",
+          "returnTime": "09:50",
+          "rank": 0
+        },
+        {
+          "ringNo": "CHN-2022-188",
+          "returnTime": "10:00",
+          "rank": 0
+        },
+        {
+          "ringNo": "CHN-2023-512",
+          "returnTime": "09:40",
+          "rank": 3
+        }
+      ]
     }
   ]
 }
