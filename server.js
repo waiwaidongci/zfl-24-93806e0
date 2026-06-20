@@ -115,14 +115,38 @@ function relation(db, ringNo) {
   return { pigeon, father, mother, children, breedingPlans, raceResults, raceStats };
 }
 
-function buildPedigreeNode(db, ringNo, level, maxUpLevel, visited, path) {
+const PEDIGREE_MAX_UP_LEVEL = 10;
+const PEDIGREE_MAX_DOWN_LEVEL = 10;
+const PEDIGREE_DEFAULT_UP_LEVEL = 2;
+const PEDIGREE_DEFAULT_DOWN_LEVEL = 1;
+const PEDIGREE_MAX_NODES_PER_REQUEST = 500;
+
+function buildPedigreeNode(db, ringNo, level, direction, maxLevel, visited, path, options, stats) {
+  stats.nodesBuilt++;
+  if (stats.nodesBuilt > PEDIGREE_MAX_NODES_PER_REQUEST) {
+    return {
+      ringNo: ringNo || "",
+      exists: false,
+      pigeon: null,
+      isCircular: false,
+      circularVia: null,
+      isTruncated: true,
+      level,
+      father: null,
+      mother: null,
+      children: []
+    };
+  }
+
   const node = {
     ringNo: ringNo || "",
     exists: false,
     pigeon: null,
     isCircular: false,
     circularVia: null,
+    isTruncated: false,
     level,
+    direction,
     father: null,
     mother: null,
     children: []
@@ -135,11 +159,13 @@ function buildPedigreeNode(db, ringNo, level, maxUpLevel, visited, path) {
   if (visited.has(ringNo)) {
     node.isCircular = true;
     node.circularVia = path.get(ringNo) || "已访问";
+    stats.cyclesFound++;
     return node;
   }
 
   const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
   if (!pigeon) {
+    stats.missingFound++;
     return node;
   }
 
@@ -157,16 +183,36 @@ function buildPedigreeNode(db, ringNo, level, maxUpLevel, visited, path) {
   currentPath.push(ringNo);
   path.set("__currentPath__", currentPath);
 
-  if (level < maxUpLevel) {
+  if (direction === "up" && level < maxLevel) {
     const fatherVisited = new Map(visited);
     const fatherPath = new Map(path);
     fatherPath.set("__currentPath__", [...currentPath]);
-    node.father = buildPedigreeNode(db, pigeon.fatherRing, level + 1, maxUpLevel, fatherVisited, fatherPath);
+    node.father = buildPedigreeNode(db, pigeon.fatherRing, level + 1, "up", maxLevel, fatherVisited, fatherPath, options, stats);
 
     const motherVisited = new Map(visited);
     const motherPath = new Map(path);
     motherPath.set("__currentPath__", [...currentPath]);
-    node.mother = buildPedigreeNode(db, pigeon.motherRing, level + 1, maxUpLevel, motherVisited, motherPath);
+    node.mother = buildPedigreeNode(db, pigeon.motherRing, level + 1, "up", maxLevel, motherVisited, motherPath, options, stats);
+  }
+
+  if (direction === "down" && level < maxLevel) {
+    const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
+    node.children = children.map(child => {
+      const childVisited = new Map(visited);
+      const childPath = new Map(path);
+      childPath.set("__currentPath__", [...currentPath]);
+      const childNode = buildPedigreeNode(db, child.ringNo, level + 1, "down", maxLevel, childVisited, childPath, options, stats);
+      const isFatherSide = child.fatherRing === ringNo;
+      const isMotherSide = child.motherRing === ringNo;
+      if (isFatherSide && isMotherSide) {
+        childNode.parentSide = "both";
+      } else if (isFatherSide) {
+        childNode.parentSide = "father";
+      } else {
+        childNode.parentSide = "mother";
+      }
+      return childNode;
+    });
   }
 
   currentPath.pop();
@@ -175,36 +221,59 @@ function buildPedigreeNode(db, ringNo, level, maxUpLevel, visited, path) {
   return node;
 }
 
-function buildPedigree(db, ringNo) {
+function buildPedigree(db, ringNo, upLevel, downLevel) {
   const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
   if (!pigeon) return null;
 
-  const visited = new Map();
-  const path = new Map();
-  path.set("__currentPath__", []);
+  const safeUpLevel = Math.min(Math.max(0, upLevel || PEDIGREE_DEFAULT_UP_LEVEL), PEDIGREE_MAX_UP_LEVEL);
+  const safeDownLevel = Math.min(Math.max(0, downLevel || PEDIGREE_DEFAULT_DOWN_LEVEL), PEDIGREE_MAX_DOWN_LEVEL);
 
-  const root = buildPedigreeNode(db, ringNo, 0, 2, visited, path);
+  const stats = { nodesBuilt: 0, cyclesFound: 0, missingFound: 0 };
 
-  const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
-  root.children = children.map(child => {
-    const childVisited = new Map();
-    childVisited.set(ringNo, true);
-    const childPath = new Map();
-    childPath.set("__currentPath__", [ringNo]);
-    const childNode = buildPedigreeNode(db, child.ringNo, -1, -1, childVisited, childPath);
-    const isFatherSide = child.fatherRing === ringNo;
-    const isMotherSide = child.motherRing === ringNo;
-    if (isFatherSide && isMotherSide) {
-      childNode.parentSide = "both";
-    } else if (isFatherSide) {
-      childNode.parentSide = "father";
-    } else {
-      childNode.parentSide = "mother";
+  const upVisited = new Map();
+  const upPath = new Map();
+  upPath.set("__currentPath__", []);
+
+  const root = buildPedigreeNode(db, ringNo, 0, "up", safeUpLevel, upVisited, upPath, {}, stats);
+
+  if (safeDownLevel > 0) {
+    const downVisited = new Map();
+    downVisited.set(ringNo, true);
+    const downPath = new Map();
+    downPath.set("__currentPath__", [ringNo]);
+
+    const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
+    root.children = children.map(child => {
+      const childVisited = new Map(downVisited);
+      const childPath = new Map(downPath);
+      childPath.set("__currentPath__", [ringNo]);
+      const childNode = buildPedigreeNode(db, child.ringNo, 1, "down", safeDownLevel, childVisited, childPath, {}, stats);
+      const isFatherSide = child.fatherRing === ringNo;
+      const isMotherSide = child.motherRing === ringNo;
+      if (isFatherSide && isMotherSide) {
+        childNode.parentSide = "both";
+      } else if (isFatherSide) {
+        childNode.parentSide = "father";
+      } else {
+        childNode.parentSide = "mother";
+      }
+      return childNode;
+    });
+  } else {
+    root.children = [];
+  }
+
+  return {
+    root,
+    stats,
+    config: {
+      upLevel: safeUpLevel,
+      downLevel: safeDownLevel,
+      maxAllowedUp: PEDIGREE_MAX_UP_LEVEL,
+      maxAllowedDown: PEDIGREE_MAX_DOWN_LEVEL,
+      maxNodes: PEDIGREE_MAX_NODES_PER_REQUEST
     }
-    return childNode;
-  });
-
-  return root;
+  };
 }
 function parseCsv(text) {
   const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
@@ -865,19 +934,89 @@ const PEDIGREE_ISSUE_TYPES = {
   MISSING_PARENT: "missing_parent",
   SAME_PARENTS: "same_parents",
   SELF_AS_PARENT: "self_as_parent",
-  RACE_NOT_SYNCED: "race_not_synced"
+  RACE_NOT_SYNCED: "race_not_synced",
+  CIRCULAR_PEDIGREE: "circular_pedigree"
 };
 
 const PEDIGREE_ISSUE_LABELS = {
   missing_parent: "缺失父母档案",
   same_parents: "父母相同",
   self_as_parent: "自己作为父母",
-  race_not_synced: "赛事成绩未同步"
+  race_not_synced: "赛事成绩未同步",
+  circular_pedigree: "循环血统"
 };
+
+function findPedigreeCycles(db) {
+  const cycles = [];
+  const seenCycleSignatures = new Set();
+  const allRingNos = db.pigeons.map(p => p.ringNo);
+
+  function dfs(currentRingNo, visited, path, parentSide) {
+    const pigeon = db.pigeons.find(p => p.ringNo === currentRingNo);
+    if (!pigeon) return;
+
+    visited.set(currentRingNo, true);
+    path.push({ ringNo: currentRingNo, side: parentSide });
+
+    const parents = [];
+    if (pigeon.fatherRing) parents.push({ ring: pigeon.fatherRing, side: "father" });
+    if (pigeon.motherRing) parents.push({ ring: pigeon.motherRing, side: "mother" });
+
+    for (const parent of parents) {
+      if (!db.pigeons.some(p => p.ringNo === parent.ring)) continue;
+
+      if (path.some(p => p.ringNo === parent.ring)) {
+        const cycleStartIdx = path.findIndex(p => p.ringNo === parent.ring);
+        const cyclePath = path.slice(cycleStartIdx);
+        cyclePath.push({ ringNo: parent.ring, side: parent.side });
+
+        const ringSet = [...new Set(cyclePath.map(p => p.ringNo))].sort();
+        const signature = ringSet.join("|");
+
+        if (!seenCycleSignatures.has(signature)) {
+          seenCycleSignatures.add(signature);
+          cycles.push({
+            startRingNo: parent.ring,
+            path: cyclePath.map(p => ({
+              ringNo: p.ringNo,
+              relation: p.side === "father" ? "父" : p.side === "mother" ? "母" : "本鸽"
+            }))
+          });
+        }
+      } else if (!visited.has(parent.ring)) {
+        dfs(parent.ring, new Map(visited), [...path], parent.side);
+      }
+    }
+
+    path.pop();
+  }
+
+  allRingNos.forEach(ringNo => {
+    dfs(ringNo, new Map(), [], "self");
+  });
+
+  return cycles;
+}
 
 function scanPedigreeIssues(db) {
   const issues = [];
   const pigeonRingSet = new Set(db.pigeons.map(p => p.ringNo));
+
+  const cycles = findPedigreeCycles(db);
+  cycles.forEach((cycle, cycleIdx) => {
+    const pathStr = cycle.path.map(p => `${p.ringNo}(${p.relation})`).join(" → ");
+    issues.push({
+      id: `cycle_${cycleIdx}_${cycle.startRingNo}`,
+      type: PEDIGREE_ISSUE_TYPES.CIRCULAR_PEDIGREE,
+      ringNo: cycle.startRingNo,
+      message: `检测到循环血统：${pathStr}`,
+      detail: {
+        cyclePath: cycle.path,
+        startRingNo: cycle.startRingNo,
+        pathString: pathStr
+      }
+    });
+  });
 
   db.pigeons.forEach(pigeon => {
     const ringNo = pigeon.ringNo;
@@ -1083,6 +1222,30 @@ function fixPedigreeIssue(db, input) {
       };
     }
 
+    case PEDIGREE_ISSUE_TYPES.CIRCULAR_PEDIGREE: {
+      const cyclePath = detail?.cyclePath;
+      if (!cyclePath || cyclePath.length < 3) {
+        return { success: false, error: "缺少循环路径信息" };
+      }
+      const lastLink = cyclePath[cyclePath.length - 2];
+      const cycleNode = cyclePath[cyclePath.length - 1];
+      const targetPigeon = db.pigeons.find(p => p.ringNo === lastLink.ringNo);
+      if (!targetPigeon) {
+        return { success: false, error: "循环路径中的鸽只不存在" };
+      }
+      if (cycleNode.relation === "父") {
+        targetPigeon.fatherRing = "";
+      } else {
+        targetPigeon.motherRing = "";
+      }
+      return {
+        success: true,
+        message: `已清除 ${lastLink.ringNo} 的${cycleNode.relation === "父" ? "父" : "母"}鸽环号，打破循环血统`,
+        action: "break_cycle",
+        brokenAt: { ringNo: lastLink.ringNo, parentType: cycleNode.relation }
+      };
+    }
+
     default:
       return { success: false, error: "未知问题类型" };
   }
@@ -1285,31 +1448,54 @@ const page = `<!doctype html>
     .pigeon-race-stat .stat-value.best { color:var(--yellow); }
     .pigeon-race-stat .stat-meta { font-size:12px; color:var(--muted); margin-top:4px; line-height:1.5; }
     .pedigree-container { padding:10px 0; }
-    .pedigree-toolbar { display:flex; gap:10px; margin-bottom:16px; align-items:center; }
-    .pedigree-toolbar input { flex:1; }
+    .pedigree-toolbar { display:flex; gap:10px; margin-bottom:12px; align-items:center; flex-wrap:wrap; }
+    .pedigree-toolbar input { flex:1; min-width:200px; }
+    .pedigree-level-selector { display:flex; align-items:center; gap:6px; }
+    .pedigree-level-selector label { font-size:12px; color:var(--muted); white-space:nowrap; }
+    .pedigree-level-selector select { padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; font-size:13px; }
+    .pedigree-stats { display:flex; gap:16px; margin-bottom:12px; padding:10px 14px; background:#f8fafb; border:1px solid var(--line); border-radius:8px; font-size:13px; flex-wrap:wrap; }
+    .pedigree-stats .stat { display:flex; align-items:center; gap:6px; }
+    .pedigree-stats .stat .num { font-weight:700; color:var(--accent); }
+    .pedigree-stats .stat.warn .num { color:var(--yellow); }
+    .pedigree-stats .stat.bad .num { color:var(--red); }
     .pedigree-tree { display:flex; flex-direction:column; gap:0; }
     .pedigree-row { display:grid; gap:12px; margin-bottom:4px; }
-    .pedigree-row.level-2 { grid-template-columns:repeat(4, 1fr); }
-    .pedigree-row.level-1 { grid-template-columns:repeat(2, 1fr); }
     .pedigree-row.level-0 { grid-template-columns:1fr; }
-    .pedigree-node { background:#fff; border:2px solid var(--line); border-radius:10px; padding:10px 12px; position:relative; transition:border-color 0.2s; }
+    .pedigree-row.level-1 { grid-template-columns:repeat(2, 1fr); }
+    .pedigree-row.level-2 { grid-template-columns:repeat(4, 1fr); }
+    .pedigree-row.level-3 { grid-template-columns:repeat(8, 1fr); }
+    .pedigree-row.level-4 { grid-template-columns:repeat(16, 1fr); }
+    .pedigree-row.level-5 { grid-template-columns:repeat(32, 1fr); }
+    .pedigree-row.level-6 { grid-template-columns:repeat(64, 1fr); }
+    .pedigree-row.level-7 { grid-template-columns:repeat(128, 1fr); }
+    .pedigree-row.level-8 { grid-template-columns:repeat(256, 1fr); }
+    .pedigree-row.level-9 { grid-template-columns:repeat(512, 1fr); }
+    .pedigree-row.level-10 { grid-template-columns:repeat(1024, 1fr); }
+    .pedigree-node { background:#fff; border:2px solid var(--line); border-radius:10px; padding:10px 12px; position:relative; transition:border-color 0.2s; min-width:0; }
     .pedigree-node.exists { cursor:pointer; }
     .pedigree-node.exists:hover { border-color:var(--accent); background:#f0f5fa; }
     .pedigree-node.circular { border-color:var(--yellow); background:#fff8e6; cursor:default; }
     .pedigree-node.missing { background:#f8fafb; border-style:dashed; color:var(--muted); }
+    .pedigree-node.truncated { border-color:var(--red); background:#fff5f5; }
     .pedigree-node .role { font-size:11px; color:var(--muted); font-weight:700; text-transform:uppercase; letter-spacing:0.5px; }
     .pedigree-node .ring { font-weight:700; font-size:15px; margin-top:2px; word-break:break-all; }
     .pedigree-node .info { font-size:12px; color:var(--muted); margin-top:3px; }
     .pedigree-node .circular-tag { display:inline-block; background:var(--yellow); color:#5a4710; font-size:10px; padding:1px 6px; border-radius:4px; margin-top:4px; font-weight:700; }
+    .pedigree-node .truncated-tag { display:inline-block; background:var(--red); color:#fff; font-size:10px; padding:1px 6px; border-radius:4px; margin-top:4px; font-weight:700; }
     .pedigree-children { margin-top:20px; }
-    .pedigree-children-title { font-size:14px; font-weight:700; color:var(--accent); margin-bottom:10px; padding-bottom:4px; border-bottom:2px solid var(--accent); }
+    .pedigree-children-group { margin-bottom:16px; }
+    .pedigree-children-group-title { font-size:14px; font-weight:700; color:var(--accent); margin-bottom:10px; padding-bottom:4px; border-bottom:2px solid var(--accent); }
     .pedigree-children-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:10px; }
+    .pedigree-children-more { margin-top:10px; text-align:center; }
+    .pedigree-children-more button { padding:8px 16px; background:var(--accent); color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px; }
+    .pedigree-children-more button:hover { opacity:0.9; }
     .pedigree-legend { display:flex; gap:16px; margin-top:16px; padding-top:12px; border-top:1px dashed var(--line); font-size:12px; color:var(--muted); flex-wrap:wrap; }
     .pedigree-legend-item { display:flex; align-items:center; gap:6px; }
     .legend-box { width:18px; height:18px; border-radius:4px; border:2px solid var(--line); }
     .legend-box.exists { background:#fff; border-color:var(--accent); }
     .legend-box.missing { background:#f8fafb; border-style:dashed; }
     .legend-box.circular { background:#fff8e6; border-color:var(--yellow); }
+    .legend-box.truncated { background:#fff5f5; border-color:var(--red); }
     .pedigree-breadcrumb { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:12px; font-size:13px; }
     .pedigree-breadcrumb .crumb { background:#eef3f7; border:1px solid var(--line); padding:3px 10px; border-radius:999px; color:var(--accent); cursor:pointer; }
     .pedigree-breadcrumb .crumb.current { background:var(--accent); color:#fff; cursor:default; }
@@ -1694,24 +1880,58 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
   </div>
   <div id="pedigreeModal" style="display:none;">
     <div class="modal-backdrop">
-      <div class="modal" style="max-width:1200px;">
+      <div class="modal" style="max-width:1400px;">
         <div class="modal-header">
-          <h2>三代血统树查询</h2>
+          <h2>血统树探索</h2>
           <button id="closePedigree" class="secondary">关闭</button>
         </div>
         <div class="pedigree-container">
           <div class="pedigree-toolbar">
-            <input id="pedigreeSearch" placeholder="输入足环号查询血统树（示例：CHN-2026-001）">
+            <input id="pedigreeSearch" placeholder="输入足环号查询血统树（示例：CHN-2026-001）" style="flex:1;">
+            <div class="pedigree-level-selector">
+              <label>上溯代数</label>
+              <select id="pedigreeUpLevel">
+                <option value="0">0代</option>
+                <option value="1">1代（父母）</option>
+                <option value="2" selected>2代（祖父母）</option>
+                <option value="3">3代（曾祖父母）</option>
+                <option value="4">4代</option>
+                <option value="5">5代</option>
+                <option value="6">6代</option>
+                <option value="7">7代</option>
+                <option value="8">8代</option>
+                <option value="9">9代</option>
+                <option value="10">10代（最大）</option>
+              </select>
+            </div>
+            <div class="pedigree-level-selector">
+              <label>下溯代数</label>
+              <select id="pedigreeDownLevel">
+                <option value="0">0代</option>
+                <option value="1" selected>1代（子代）</option>
+                <option value="2">2代（孙代）</option>
+                <option value="3">3代（曾孙代）</option>
+                <option value="4">4代</option>
+                <option value="5">5代</option>
+                <option value="6">6代</option>
+                <option value="7">7代</option>
+                <option value="8">8代</option>
+                <option value="9">9代</option>
+                <option value="10">10代（最大）</option>
+              </select>
+            </div>
             <button id="pedigreeSearchBtn">查询</button>
           </div>
+          <div id="pedigreeStats" class="pedigree-stats" style="display:none;"></div>
           <div id="pedigreeBreadcrumb" class="pedigree-breadcrumb"></div>
           <div id="pedigreeContent">
-            <div class="empty-state">请输入足环号开始查询三代血统树</div>
+            <div class="empty-state">请输入足环号开始查询血统树</div>
           </div>
           <div id="pedigreeLegend" class="pedigree-legend" style="display:none;">
             <div class="pedigree-legend-item"><div class="legend-box exists"></div><span>已登记（点击查看该鸽血统树）</span></div>
             <div class="pedigree-legend-item"><div class="legend-box missing"></div><span>未登记</span></div>
             <div class="pedigree-legend-item"><div class="legend-box circular"></div><span>循环血统（已停止展开）</span></div>
+            <div class="pedigree-legend-item"><div class="legend-box truncated"></div><span>数据截断（节点数超限）</span></div>
           </div>
         </div>
       </div>
@@ -2904,20 +3124,47 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     const pedigreeSearch = document.querySelector("#pedigreeSearch");
     const pedigreeLegend = document.querySelector("#pedigreeLegend");
     const pedigreeBreadcrumb = document.querySelector("#pedigreeBreadcrumb");
+    const pedigreeStats = document.querySelector("#pedigreeStats");
+    const pedigreeUpLevel = document.querySelector("#pedigreeUpLevel");
+    const pedigreeDownLevel = document.querySelector("#pedigreeDownLevel");
+    const PEDIGREE_BATCH_SIZE = 50;
     let pedigreeHistory = [];
+    let currentPedigreeData = null;
+
+    function getRoleLabel(level, side, parentSide) {
+      if (level === 0) return "本鸽";
+      if (level < 0) {
+        const genLabel = Math.abs(level) === 1 ? "子代" : Math.abs(level) === 2 ? "孙代" : Math.abs(level) === 3 ? "曾孙代" : (Math.abs(level) + "代孙");
+        if (parentSide === "both") return genLabel + "（父母方）";
+        if (parentSide === "father") return genLabel + "（父方）";
+        if (parentSide === "mother") return genLabel + "（母方）";
+        return genLabel;
+      }
+      const prefix = side === "father" ? "父" : "母";
+      if (level === 1) return prefix + "亲";
+      if (level === 2) return prefix + "祖父";
+      if (level === 3) return "曾" + prefix + "祖父";
+      return (level + "代") + prefix + "系";
+    }
+
     function renderPedigreeNode(node, roleLabel) {
       let classes = "pedigree-node";
       let ringDisplay = "未登记";
       let infoDisplay = "";
       let circularTag = "";
-      if (node.isCircular) {
+      let truncatedTag = "";
+      if (node.isTruncated) {
+        classes += " truncated";
+        ringDisplay = node.ringNo || "数据截断";
+        truncatedTag = '<div class="truncated-tag">⚠ 节点数超限</div>';
+      } else if (node.isCircular) {
         classes += " circular";
         ringDisplay = node.ringNo || "未登记";
         circularTag = '<div class="circular-tag">↻ 循环血统：' + (node.circularVia || "已访问") + '</div>';
       } else if (node.exists) {
         classes += " exists";
         ringDisplay = node.ringNo;
-        infoDisplay = (node.pigeon?.owner || "") + (node.pigeon?.color ? " · " + node.pigeon.color : "") + (node.pigeon?.loft ? " · " + node.pigeon.loft : "");
+        infoDisplay = (node.pigeon?.owner || "") + (node.pigeon?.color ? " · " + node.pigeon?.color : "") + (node.pigeon?.loft ? " · " + node.pigeon.loft : "");
       } else if (node.ringNo) {
         classes += " missing";
         ringDisplay = node.ringNo;
@@ -2925,61 +3172,167 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       } else {
         classes += " missing";
       }
-      const dataAttr = (node.exists && !node.isCircular) ? ' data-pedigree-jump="' + node.ringNo + '"' : '';
+      const dataAttr = (node.exists && !node.isCircular && !node.isTruncated) ? ' data-pedigree-jump="' + node.ringNo + '"' : '';
       return '<div class="' + classes + '"' + dataAttr + '>' +
         '<div class="role">' + roleLabel + '</div>' +
         '<div class="ring">' + ringDisplay + '</div>' +
         (infoDisplay ? '<div class="info">' + infoDisplay + '</div>' : '') +
         circularTag +
+        truncatedTag +
       '</div>';
     }
-    function renderPedigreeTree(root) {
-      if (!root) {
+
+    function collectUpLevels(root, maxUpLevel) {
+      const levels = [];
+      for (let l = 0; l <= maxUpLevel; l++) {
+        levels.push([]);
+      }
+      function traverse(node, level, side) {
+        if (!node || level > maxUpLevel) return;
+        levels[level].push({ node, side, parentSide: node.parentSide });
+        if (level < maxUpLevel) {
+          traverse(node.father, level + 1, "father");
+          traverse(node.mother, level + 1, "mother");
+        }
+      }
+      traverse(root, 0, "self");
+      return levels;
+    }
+
+    function collectDownLevels(children, maxDownLevel) {
+      const levels = [];
+      for (let l = 1; l <= maxDownLevel; l++) {
+        levels.push([]);
+      }
+      function traverse(nodes, level) {
+        if (level > maxDownLevel || !nodes || nodes.length === 0) return;
+        nodes.forEach(node => {
+          levels[level - 1].push({ node, side: "child", parentSide: node.parentSide });
+          if (level < maxDownLevel && node.children && node.children.length > 0) {
+            traverse(node.children, level + 1);
+          }
+        });
+      }
+      traverse(children, 1);
+      return levels;
+    }
+
+    function renderPedigreeTree(fullData) {
+      if (!fullData) {
         pedigreeContent.innerHTML = '<div class="empty-state">未找到该足环号的档案</div>';
+        pedigreeStats.style.display = "none";
         return;
       }
-      const level2 = [];
-      const gf = root.father?.father;
-      const gm = root.father?.mother;
-      const mf = root.mother?.father;
-      const mm = root.mother?.mother;
-      level2.push(gf ? renderPedigreeNode(gf, "祖父") : renderPedigreeNode({ ringNo: "", exists: false }, "祖父"));
-      level2.push(gm ? renderPedigreeNode(gm, "祖母") : renderPedigreeNode({ ringNo: "", exists: false }, "祖母"));
-      level2.push(mf ? renderPedigreeNode(mf, "外祖父") : renderPedigreeNode({ ringNo: "", exists: false }, "外祖父"));
-      level2.push(mm ? renderPedigreeNode(mm, "外祖母") : renderPedigreeNode({ ringNo: "", exists: false }, "外祖母"));
-      const level1 = [];
-      level1.push(root.father ? renderPedigreeNode(root.father, "父亲") : renderPedigreeNode({ ringNo: root.pigeon?.fatherRing || "", exists: false }, "父亲"));
-      level1.push(root.mother ? renderPedigreeNode(root.mother, "母亲") : renderPedigreeNode({ ringNo: root.pigeon?.motherRing || "", exists: false }, "母亲"));
-      const level0 = [renderPedigreeNode(root, "本鸽")];
-      let childrenHtml = "";
-      if (root.children && root.children.length > 0) {
-        const childrenNodes = root.children.map(child => {
-          let roleLabel;
-          if (child.parentSide === "both") {
-            roleLabel = "子代（父母方）";
-          } else if (child.parentSide === "father") {
-            roleLabel = "子代（父方）";
-          } else {
-            roleLabel = "子代（母方）";
-          }
-          return renderPedigreeNode(child, roleLabel);
+      const { root, stats, config } = fullData;
+      currentPedigreeData = fullData;
+
+      const maxUpLevel = config.upLevel;
+      const maxDownLevel = config.downLevel;
+
+      const upLevels = collectUpLevels(root, maxUpLevel);
+      const downLevels = collectDownLevels(root.children || [], maxDownLevel);
+
+      let upTreeHtml = '<div class="pedigree-tree">';
+      for (let l = maxUpLevel; l >= 0; l--) {
+        const levelData = upLevels[l] || [];
+        const levelNodes = levelData.map(item => {
+          const roleLabel = getRoleLabel(l, item.side, item.parentSide);
+          return renderPedigreeNode(item.node, roleLabel);
         }).join("");
-        childrenHtml = '<div class="pedigree-children">' +
-          '<div class="pedigree-children-title">子代（共 ' + root.children.length + ' 只）</div>' +
-          '<div class="pedigree-children-grid">' + childrenNodes + '</div>' +
-        '</div>';
+        upTreeHtml += '<div class="pedigree-row level-' + l + '">' + levelNodes + '</div>';
+      }
+      upTreeHtml += '</div>';
+
+      let downHtml = '<div class="pedigree-children">';
+      if (downLevels.length > 0 && downLevels[0].length > 0) {
+        downLevels.forEach((levelData, idx) => {
+          const levelNum = idx + 1;
+          const genLabel = levelNum === 1 ? "子代" : levelNum === 2 ? "孙代" : levelNum === 3 ? "曾孙代" : (levelNum + "代孙");
+          const totalAtLevel = levelData.length;
+          const showCount = Math.min(totalAtLevel, PEDIGREE_BATCH_SIZE);
+          const nodesToShow = levelData.slice(0, showCount);
+          const levelNodes = nodesToShow.map(item => {
+            const roleLabel = getRoleLabel(-levelNum, item.side, item.parentSide);
+            return renderPedigreeNode(item.node, roleLabel);
+          }).join("");
+
+          const moreBtnHtml = totalAtLevel > showCount
+            ? '<div class="pedigree-children-more"><button data-load-more-level="' + levelNum + '">加载更多（剩余 ' + (totalAtLevel - showCount) + ' 只）</button></div>'
+            : '';
+
+          downHtml += '<div class="pedigree-children-group" data-down-level="' + levelNum + '">' +
+            '<div class="pedigree-children-group-title">' + genLabel + '（共 ' + totalAtLevel + ' 只）</div>' +
+            '<div class="pedigree-children-grid" data-down-grid="' + levelNum + '">' + levelNodes + '</div>' +
+            moreBtnHtml +
+          '</div>';
+        });
       } else {
-        childrenHtml = '<div class="pedigree-children">' +
-          '<div class="pedigree-children-title">子代</div>' +
+        downHtml += '<div class="pedigree-children-group">' +
+          '<div class="pedigree-children-group-title">子代</div>' +
           '<div class="empty-state" style="padding:14px;">暂无已登记子代</div>' +
         '</div>';
       }
-      pedigreeContent.innerHTML = '<div class="pedigree-tree">' +
-        '<div class="pedigree-row level-2">' + level2.join("") + '</div>' +
-        '<div class="pedigree-row level-1">' + level1.join("") + '</div>' +
-        '<div class="pedigree-row level-0">' + level0.join("") + '</div>' +
-      '</div>' + childrenHtml;
+      downHtml += '</div>';
+
+      pedigreeContent.innerHTML = upTreeHtml + downHtml;
       pedigreeLegend.style.display = "flex";
+      renderPedigreeStats(stats, config);
+      bindPedigreeEvents();
+      bindDownLevelLoadMore();
+    }
+
+    function bindDownLevelLoadMore() {
+      document.querySelectorAll("[data-load-more-level]").forEach(btn => {
+        btn.onclick = () => {
+          const levelNum = parseInt(btn.dataset.loadMoreLevel);
+          const gridEl = document.querySelector('[data-down-grid="' + levelNum + '"]');
+          if (!gridEl || !currentPedigreeData) return;
+
+          const downLevels = collectDownLevels(currentPedigreeData.root.children || [], currentPedigreeData.config.downLevel);
+          const levelData = downLevels[levelNum - 1] || [];
+          const currentCount = gridEl.children.length;
+          const nextCount = Math.min(currentCount + PEDIGREE_BATCH_SIZE, levelData.length);
+          const nodesToAdd = levelData.slice(currentCount, nextCount);
+
+          const newHtml = nodesToAdd.map(item => {
+            const roleLabel = getRoleLabel(-levelNum, item.side, item.parentSide);
+            return renderPedigreeNode(item.node, roleLabel);
+          }).join("");
+
+          gridEl.insertAdjacentHTML("beforeend", newHtml);
+
+          if (nextCount >= levelData.length) {
+            const moreBtn = document.querySelector('[data-load-more-level="' + levelNum + '"]');
+            if (moreBtn) moreBtn.parentElement.remove();
+          } else {
+            btn.textContent = '加载更多（剩余 ' + (levelData.length - nextCount) + ' 只）';
+          }
+
+          bindPedigreeEvents();
+        };
+      });
+    }
+
+    function renderPedigreeStats(stats, config) {
+      const statsHtml = [
+        '<div class="stat"><span>上溯：</span><span class="num">' + config.upLevel + '代</span></div>',
+        '<div class="stat"><span>下溯：</span><span class="num">' + config.downLevel + '代</span></div>',
+        '<div class="stat"><span>节点总数：</span><span class="num">' + stats.nodesBuilt + '</span></div>'
+      ];
+      if (stats.cyclesFound > 0) {
+        statsHtml.push('<div class="stat warn"><span>循环血统：</span><span class="num">' + stats.cyclesFound + '处</span></div>');
+      }
+      if (stats.missingFound > 0) {
+        statsHtml.push('<div class="stat warn"><span>缺失档案：</span><span class="num">' + stats.missingFound + '处</span></div>');
+      }
+      if (stats.nodesBuilt >= config.maxNodes) {
+        statsHtml.push('<div class="stat bad"><span>状态：</span><span class="num">已截断</span></div>');
+      }
+      pedigreeStats.innerHTML = statsHtml.join("");
+      pedigreeStats.style.display = "flex";
+    }
+
+    function bindPedigreeEvents() {
       document.querySelectorAll("[data-pedigree-jump]").forEach(el => {
         el.onclick = () => {
           const ringNo = el.dataset.pedigreeJump;
@@ -2987,6 +3340,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         };
       });
     }
+
     function renderPedigreeBreadcrumb() {
       if (pedigreeHistory.length === 0) {
         pedigreeBreadcrumb.innerHTML = "";
@@ -3009,10 +3363,14 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         };
       });
     }
+
     async function loadPedigreeFromHistory(ringNo, skipHistory) {
       try {
         pedigreeSearch.value = ringNo;
-        const data = await api('/api/pigeons/' + encodeURIComponent(ringNo) + '/pedigree');
+        const upLevel = parseInt(pedigreeUpLevel.value);
+        const downLevel = parseInt(pedigreeDownLevel.value);
+        const url = '/api/pigeons/' + encodeURIComponent(ringNo) + '/pedigree?upLevel=' + upLevel + '&downLevel=' + downLevel;
+        const data = await api(url);
         renderPedigreeTree(data);
         if (!skipHistory) {
           if (pedigreeHistory[pedigreeHistory.length - 1] !== ringNo) {
@@ -3023,16 +3381,30 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       } catch(e) {
         pedigreeContent.innerHTML = '<div class="empty-state" style="color:var(--red);">查询失败：' + e.message + '</div>';
         pedigreeLegend.style.display = "none";
+        pedigreeStats.style.display = "none";
       }
     }
+
     async function loadPedigree(ringNo) {
       loadPedigreeFromHistory(ringNo, false);
     }
+
+    function jumpToPedigreeFromReview(issue) {
+      pedigreeReviewModal.style.display = "none";
+      pedigreeModal.style.display = "block";
+      pedigreeHistory = [];
+      const startRingNo = issue.detail?.startRingNo || issue.ringNo;
+      pedigreeSearch.value = startRingNo;
+      pedigreeUpLevel.value = Math.max(3, parseInt(pedigreeUpLevel.value));
+      loadPedigree(startRingNo);
+    }
+
     document.querySelector("#pedigreeBtn").onclick = () => {
       pedigreeModal.style.display = "block";
       pedigreeHistory = [];
-      pedigreeContent.innerHTML = '<div class="empty-state">请输入足环号开始查询三代血统树</div>';
+      pedigreeContent.innerHTML = '<div class="empty-state">请输入足环号开始查询血统树</div>';
       pedigreeLegend.style.display = "none";
+      pedigreeStats.style.display = "none";
       pedigreeBreadcrumb.innerHTML = "";
       pedigreeSearch.value = currentRingNo || "";
       if (currentRingNo) {
@@ -3047,6 +3419,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       if (!ringNo) {
         pedigreeContent.innerHTML = '<div class="empty-state">请输入足环号</div>';
         pedigreeLegend.style.display = "none";
+        pedigreeStats.style.display = "none";
         return;
       }
       pedigreeHistory = [];
@@ -3054,6 +3427,18 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     };
     pedigreeSearch.addEventListener("keydown", (e) => {
       if (e.key === "Enter") document.querySelector("#pedigreeSearchBtn").click();
+    });
+    pedigreeUpLevel.addEventListener("change", () => {
+      if (currentPedigreeData) {
+        const ringNo = pedigreeSearch.value.trim();
+        if (ringNo) loadPedigree(ringNo);
+      }
+    });
+    pedigreeDownLevel.addEventListener("change", () => {
+      if (currentPedigreeData) {
+        const ringNo = pedigreeSearch.value.trim();
+        if (ringNo) loadPedigree(ringNo);
+      }
     });
     const backupModal = document.querySelector("#backupModal");
     const restoreFileInput = document.querySelector("#restoreFileInput");
@@ -3694,14 +4079,16 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
       missing_parent: "创建父母档案",
       same_parents: "清空母鸽环号",
       self_as_parent: "清空自身父母环号",
-      race_not_synced: "同步成绩到档案"
+      race_not_synced: "同步成绩到档案",
+      circular_pedigree: "打破循环"
     };
 
     const PEDIGREE_CONFIRM_MESSAGES = {
       missing_parent: function(issue) { return "将为足环号" + String.fromCharCode(12300) + (issue.detail ? issue.detail.parentRing : "") + String.fromCharCode(12301) + "创建一条基础档案（鸽主、羽色、棚号待补充）。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; },
       same_parents: function() { return "将清空该鸽只的母鸽环号，以解决父母相同问题。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; },
       self_as_parent: function(issue) { return "将清空该鸽只的" + (issue.detail && issue.detail.parentType === "father" ? "父" : "母") + "鸽环号，因为这是它自己的足环号。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; },
-      race_not_synced: function(issue) { return "将赛事" + String.fromCharCode(12300) + (issue.detail ? issue.detail.eventName : "") + String.fromCharCode(12301) + "的成绩同步到鸽只档案。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; }
+      race_not_synced: function(issue) { return "将赛事" + String.fromCharCode(12300) + (issue.detail ? issue.detail.eventName : "") + String.fromCharCode(12301) + "的成绩同步到鸽只档案。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; },
+      circular_pedigree: function(issue) { return "将自动选择循环路径中的一个链接并清除其父母环号，以打破循环血统。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; }
     };
 
     document.querySelector("#pedigreeReviewBtn").onclick = function() {
@@ -3816,6 +4203,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
         const typeLabel = labels[issue.type] || issue.type;
         const fixLabel = PEDIGREE_FIX_LABELS[issue.type] || "修复";
         let detailTags = "";
+        let viewPedigreeBtn = "";
         if (issue.type === "missing_parent") {
           const pt = issue.detail ? issue.detail.parentType : "";
           const pr = issue.detail ? issue.detail.parentRing : "";
@@ -3831,6 +4219,10 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
           const dt = issue.detail ? issue.detail.date : "";
           const ds = issue.detail ? issue.detail.distance : 0;
           detailTags = '<span class="issue-detail-tag">赛事：' + en + '</span><span class="issue-detail-tag">日期：' + dt + '</span><span class="issue-detail-tag">距离：' + ds + 'km' + rankText + timeText + '</span>';
+        } else if (issue.type === "circular_pedigree") {
+          const pathStr = issue.detail?.pathString || "";
+          detailTags = '<span class="issue-detail-tag">循环路径：' + pathStr + '</span>';
+          viewPedigreeBtn = '<button class="secondary btn-small" data-view-pedigree="' + issue.id + '" style="margin-right:8px;">查看血统树</button>';
         }
         return '<div class="issue-item" data-issue-id="' + issue.id + '">' +
           '<div class="issue-item-header">' +
@@ -3839,6 +4231,7 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
               '<span style="margin-left:8px;" class="issue-ring">' + issue.ringNo + '</span>' +
             '</div>' +
             '<div class="issue-actions">' +
+              viewPedigreeBtn +
               '<button class="issue-fix-btn" data-fix-issue="' + issue.id + '">' + fixLabel + '</button>' +
             '</div>' +
           '</div>' +
@@ -3850,6 +4243,16 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
 
       pedigreeIssueListEl.querySelectorAll("[data-fix-issue]").forEach(function(btn) {
         btn.onclick = function() { fixIssue(btn.dataset.fixIssue); };
+      });
+
+      pedigreeIssueListEl.querySelectorAll("[data-view-pedigree]").forEach(function(btn) {
+        btn.onclick = function() {
+          const issueId = btn.dataset.viewPedigree;
+          const issue = pedigreeScanResult.issues.find(function(i) { return i.id === issueId; });
+          if (issue) {
+            jumpToPedigreeFromReview(issue);
+          }
+        };
       });
     }
 
@@ -3997,7 +4400,11 @@ const server = http.createServer(async (req, res) => {
     }
     const pedigreeMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/pedigree$/);
     if (pedigreeMatch && req.method === "GET") {
-      const data = buildPedigree(db, decodeURIComponent(pedigreeMatch[1]));
+      const upLevelRaw = url.searchParams.get("upLevel");
+      const downLevelRaw = url.searchParams.get("downLevel");
+      const upLevel = upLevelRaw !== null ? parseInt(upLevelRaw) : undefined;
+      const downLevel = downLevelRaw !== null ? parseInt(downLevelRaw) : undefined;
+      const data = buildPedigree(db, decodeURIComponent(pedigreeMatch[1]), upLevel, downLevel);
       return data ? sendJson(res, 200, data) : sendJson(res, 404, { error: "pigeon_not_found" });
     }
     const actionMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/(transfers|races|vaccines)$/);
