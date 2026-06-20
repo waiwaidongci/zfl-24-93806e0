@@ -45,7 +45,10 @@ async function cleanup() {
 
   for (const event of testEvents) {
     console.log(`   删除赛事: ${event.name}`);
-    await api("DELETE", `/api/race-events/${encodeURIComponent(event.id)}`);
+    const deleteRes = await api("DELETE", `/api/race-events/${encodeURIComponent(event.id)}`);
+    if (deleteRes.status !== 200) {
+      throw new Error(`删除测试赛事失败：${event.name} (${deleteRes.status})`);
+    }
   }
 
   console.log("\n2. 获取所有鸽只...");
@@ -58,7 +61,10 @@ async function cleanup() {
 
   for (const pigeon of tempPigeons) {
     console.log(`   删除鸽只: ${pigeon.ringNo}`);
-    await api("DELETE", `/api/pigeons/${encodeURIComponent(pigeon.ringNo)}`);
+    const deleteRes = await api("DELETE", `/api/pigeons/${encodeURIComponent(pigeon.ringNo)}`);
+    if (deleteRes.status !== 200) {
+      throw new Error(`删除临时鸽只失败：${pigeon.ringNo} (${deleteRes.status})`);
+    }
   }
 
   console.log("\n3. 恢复初始鸽只的races数据...");
@@ -70,7 +76,10 @@ async function cleanup() {
     for (let i = pigeon001.races.length - 1; i >= 0; i--) {
       if (pigeon001.races[i].event !== "120公里训放") {
         console.log(`     删除第 ${i} 条: ${pigeon001.races[i].event}`);
-        await api("DELETE", `/api/pigeons/${encodeURIComponent("CHN-2026-001")}/races/${i}`);
+        const deleteRes = await api("DELETE", `/api/pigeons/${encodeURIComponent("CHN-2026-001")}/races/${i}`);
+        if (deleteRes.status !== 200) {
+          throw new Error(`删除额外race记录失败：${pigeon001.races[i].event} (${deleteRes.status})`);
+        }
       }
     }
   }

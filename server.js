@@ -3975,6 +3975,21 @@ const server = http.createServer(async (req, res) => {
       await saveDb(db);
       return sendJson(res, 201, pigeon);
     }
+    const pigeonMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)$/);
+    if (pigeonMatch && req.method === "DELETE") {
+      const ringNo = decodeURIComponent(pigeonMatch[1]);
+      const index = db.pigeons.findIndex(p => p.ringNo === ringNo);
+      if (index === -1) return sendJson(res, 404, { error: "pigeon_not_found" });
+      db.pigeons.splice(index, 1);
+      let removedRaceResults = 0;
+      db.raceEvents.forEach(event => {
+        const before = event.results.length;
+        event.results = event.results.filter(r => r.ringNo !== ringNo);
+        removedRaceResults += before - event.results.length;
+      });
+      await saveDb(db);
+      return sendJson(res, 200, { success: true, ringNo, removedRaceResults });
+    }
     const relationMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/relation$/);
     if (relationMatch && req.method === "GET") {
       const data = relation(db, decodeURIComponent(relationMatch[1]));
