@@ -42,6 +42,9 @@ function assert(condition, label) {
 
 async function test() {
   const ringNo = "CHN-2026-001";
+  const originalExportRes = await api("GET", "/api/backup/export");
+  assert(originalExportRes.status === 200, "测试前导出原始备份返回 200");
+  const originalBackup = originalExportRes.data;
 
   console.log("\n=== 疫苗记录 CRUD 验证 ===\n");
 
@@ -160,7 +163,6 @@ async function test() {
   assert(exportRes.status === 200, "导出备份返回 200");
   assert(Array.isArray(exportRes.data.pigeons), "备份包含 pigeons 数组");
   assert(exportRes.data.pigeons.length > 0, "备份中有鸽只数据");
-  const originalBackup = exportRes.data;
 
   console.log("\n--- 14. 恢复预览 - 备份文件内重复环号 ---");
   const dupRingBackup = {
