@@ -697,6 +697,96 @@ function calculateRaceStats(event, pigeons) {
   return stats;
 }
 
+function findMatchingRaceIndexInPigeon(pigeon, event) {
+  if (!pigeon.races) return -1;
+  return pigeon.races.findIndex(r =>
+    r.event === event.name && r.date === event.date && Math.abs(r.distance - event.distance) < 0.1
+  );
+}
+
+function syncRaceResultToPigeon(db, event, ringNo) {
+  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+  if (!pigeon) return { success: false, reason: "pigeon_not_found" };
+  if (!pigeon.races) pigeon.races = [];
+  const eventResult = event.results.find(r => r.ringNo === ringNo);
+  if (!eventResult) return { success: false, reason: "no_result_in_event" };
+  const raceEntry = {
+    date: event.date,
+    event: event.name,
+    distance: event.distance,
+    returnTime: eventResult.returnTime || "",
+    rank: Number(eventResult.rank || 0)
+  };
+  const idx = findMatchingRaceIndexInPigeon(pigeon, event);
+  if (idx >= 0) {
+    pigeon.races[idx] = raceEntry;
+    return { success: true, action: "updated", raceEntry };
+  } else {
+    pigeon.races.push(raceEntry);
+    return { success: true, action: "added", raceEntry };
+  }
+}
+
+function removeRaceFromPigeonByEvent(db, event, ringNo) {
+  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+  if (!pigeon || !pigeon.races) return { success: false, reason: "not_found" };
+  const idx = findMatchingRaceIndexInPigeon(pigeon, event);
+  if (idx >= 0) {
+    pigeon.races.splice(idx, 1);
+    return { success: true, action: "removed" };
+  }
+  return { success: false, reason: "no_matching_race" };
+}
+
+function findMatchingEvent(db, raceEntry) {
+  if (!db.raceEvents) return null;
+  return db.raceEvents.find(e =>
+    e.name === raceEntry.event && e.date === raceEntry.date && Math.abs(e.distance - (raceEntry.distance || 0)) < 0.1
+  );
+}
+
+function syncPigeonRaceToEvent(db, ringNo, raceEntry) {
+  const event = findMatchingEvent(db, raceEntry);
+  if (!event) return { success: false, reason: "no_matching_event" };
+  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+  if (!pigeon) return { success: false, reason: "pigeon_not_found" };
+  const existingIdx = event.results.findIndex(r => r.ringNo === ringNo);
+  const resultEntry = {
+    ringNo,
+    returnTime: raceEntry.returnTime || "",
+    rank: Number(raceEntry.rank || 0)
+  };
+  if (existingIdx >= 0) {
+    event.results[existingIdx] = resultEntry;
+    return { success: true, action: "updated", eventId: event.id };
+  } else {
+    event.results.push(resultEntry);
+    return { success: true, action: "added", eventId: event.id };
+  }
+}
+
+function updateEventInfoInPigeonRaces(db, oldEvent, newEvent) {
+  const nameChanged = oldEvent.name !== newEvent.name;
+  const dateChanged = oldEvent.date !== newEvent.date;
+  const distanceChanged = Math.abs(oldEvent.distance - newEvent.distance) >= 0.1;
+  if (!nameChanged && !dateChanged && !distanceChanged) return { updated: 0 };
+  let updated = 0;
+  const participantRingNos = new Set(oldEvent.results.map(r => r.ringNo));
+  db.pigeons.forEach(pigeon => {
+    if (!pigeon.races || !participantRingNos.has(pigeon.ringNo)) return;
+    const idx = pigeon.races.findIndex(r =>
+      r.event === oldEvent.name && r.date === oldEvent.date && Math.abs(r.distance - oldEvent.distance) < 0.1
+    );
+    if (idx >= 0) {
+      pigeon.races[idx].event = newEvent.name;
+      pigeon.races[idx].date = newEvent.date;
+      pigeon.races[idx].distance = newEvent.distance;
+      updated++;
+    }
+  });
+  return { updated };
+}
+
 const PEDIGREE_ISSUE_TYPES = {
   MISSING_PARENT: "missing_parent",
   SAME_PARENTS: "same_parents",
@@ -3836,7 +3926,37 @@ const server = http.createServer(async (req, res) => {
         const transfer = { id: Date.now().toString(), date: input.date || today, from: pigeon.owner, to, status: "pending", createdAt: today, confirmedAt: null, cancelledAt: null };
         pigeon.transfers.push(transfer);
       }
-      if (actionMatch[2] === "races") pigeon.races.push({ date: input.date || new Date().toISOString().slice(0, 10), event: input.event, distance: Number(input.distance || 0), returnTime: input.returnTime || "", rank: Number(input.rank || 0) });
+      if (actionMatch[2] === "races") {
+        const raceEntry = {
+          date: input.date || new Date().toISOString().slice(0, 10),
+          event: input.event,
+          distance: Number(input.distance || 0),
+          returnTime: input.returnTime || "",
+          rank: Number(input.rank || 0)
+        };
+        if (!pigeon.races) pigeon.races = [];
+        const isDuplicate = pigeon.races.some(r =>
+          r.event === raceEntry.event && r.date === raceEntry.date && Math.abs(r.distance - raceEntry.distance) < 0.1
+        );
+        if (isDuplicate) {
+          return sendJson(res, 409, { error: "duplicate_race", message: "该赛事成绩已存在于鸽只档案中" });
+        }
+        const ringNo = decodeURIComponent(actionMatch[1]);
+        const eventSyncResult = syncPigeonRaceToEvent(db, ringNo, raceEntry);
+        pigeon.races.push(raceEntry);
+        const result = {
+          success: true,
+          raceEntry,
+          eventSynced: eventSyncResult.success,
+          eventSyncAction: eventSyncResult.action || null,
+          matchedEventId: eventSyncResult.eventId || null
+        };
+        if (!eventSyncResult.success) {
+          result.eventSyncReason = eventSyncResult.reason;
+        }
+        await saveDb(db);
+        return sendJson(res, 200, { ...pigeon, raceSync: result });
+      }
       if (actionMatch[2] === "vaccines") pigeon.vaccines.push({ date: input.date || new Date().toISOString().slice(0, 10), name: input.name, remark: input.remark || "" });
       await saveDb(db);
       return sendJson(res, 200, pigeon);
@@ -3865,6 +3985,74 @@ const server = http.createServer(async (req, res) => {
         pigeon.vaccines.splice(vIdx, 1);
         await saveDb(db);
         return sendJson(res, 200, pigeon);
+      }
+    }
+    const raceIndexMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/races\/(\d+)$/);
+    if (raceIndexMatch) {
+      const ringNo = decodeURIComponent(raceIndexMatch[1]);
+      const rIdx = parseInt(raceIndexMatch[2], 10);
+      const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+      if (!pigeon) return sendJson(res, 404, { error: "鸽只不存在" });
+      if (!pigeon.races) pigeon.races = [];
+      if (isNaN(rIdx) || rIdx < 0 || rIdx >= pigeon.races.length) {
+        return sendJson(res, 400, { error: "成绩记录索引无效" });
+      }
+      if (req.method === "PUT") {
+        const input = await body(req);
+        const existing = pigeon.races[rIdx];
+        const oldRace = { ...existing };
+        const updatedRace = {
+          date: input.date !== undefined ? input.date : existing.date,
+          event: input.event !== undefined ? input.event : existing.event,
+          distance: input.distance !== undefined ? Number(input.distance || 0) : existing.distance,
+          returnTime: input.returnTime !== undefined ? input.returnTime || "" : existing.returnTime,
+          rank: input.rank !== undefined ? Number(input.rank || 0) : existing.rank
+        };
+        const eventChanged = oldRace.event !== updatedRace.event || oldRace.date !== updatedRace.date || Math.abs(oldRace.distance - updatedRace.distance) >= 0.1;
+        const oldEvent = findMatchingEvent(db, oldRace);
+        pigeon.races[rIdx] = updatedRace;
+        let eventSyncResult = { success: false };
+        if (oldEvent && eventChanged) {
+          const oldResultIdx = oldEvent.results.findIndex(r => r.ringNo === ringNo);
+          if (oldResultIdx >= 0) oldEvent.results.splice(oldResultIdx, 1);
+        }
+        if (eventChanged || oldRace.returnTime !== updatedRace.returnTime || oldRace.rank !== updatedRace.rank) {
+          eventSyncResult = syncPigeonRaceToEvent(db, ringNo, updatedRace);
+        } else if (oldEvent) {
+          eventSyncResult = syncPigeonRaceToEvent(db, ringNo, updatedRace);
+        }
+        await saveDb(db);
+        return sendJson(res, 200, {
+          ...pigeon,
+          raceSync: {
+            success: true,
+            eventSynced: eventSyncResult.success,
+            eventSyncAction: eventSyncResult.action || null,
+            matchedEventId: eventSyncResult.eventId || null
+          }
+        });
+      }
+      if (req.method === "DELETE") {
+        const deletedRace = pigeon.races[rIdx];
+        pigeon.races.splice(rIdx, 1);
+        let removedFromEvent = false;
+        const matchedEvent = findMatchingEvent(db, deletedRace);
+        if (matchedEvent) {
+          const resultIdx = matchedEvent.results.findIndex(r => r.ringNo === ringNo);
+          if (resultIdx >= 0) {
+            matchedEvent.results.splice(resultIdx, 1);
+            removedFromEvent = true;
+          }
+        }
+        await saveDb(db);
+        return sendJson(res, 200, {
+          ...pigeon,
+          raceSync: {
+            success: true,
+            removedFromEvent,
+            matchedEventId: matchedEvent?.id || null
+          }
+        });
       }
     }
     const transferConfirmMatch = url.pathname.match(/^\/api\/pigeons\/([^/]+)\/transfers\/([^/]+)\/confirm$/);
@@ -4199,6 +4387,7 @@ const server = http.createServer(async (req, res) => {
       let added = 0;
       let updated = 0;
       let invalidRings = [];
+      const syncedRingNos = [];
       validated.forEach(r => {
         if (!r.ringValid) { invalidRings.push(r.ringNo); return; }
         if (r.existing) {
@@ -4209,9 +4398,11 @@ const server = http.createServer(async (req, res) => {
           event.results.push({ ringNo: r.ringNo, returnTime: r.returnTime, rank: r.rank });
           added++;
         }
+        syncedRingNos.push(r.ringNo);
       });
+      syncedRingNos.forEach(ringNo => syncRaceResultToPigeon(db, event, ringNo));
       await saveDb(db);
-      return sendJson(res, 200, { success: true, added, updated, invalidRings, event });
+      return sendJson(res, 200, { success: true, added, updated, invalidRings, synced: syncedRingNos.length, event });
     }
     const singleResultMatch = url.pathname.match(/^\/api\/race-events\/([^/]+)\/results\/(.+)$/);
     if (singleResultMatch && req.method === "PUT") {
@@ -4223,16 +4414,24 @@ const server = http.createServer(async (req, res) => {
       if (resultIndex === -1) return sendJson(res, 404, { error: "result_not_found" });
       const input = await body(req);
       const validRingNos = new Set(db.pigeons.map(p => p.ringNo));
+      const oldRingNo = ringNo;
+      let ringChanged = false;
       if (input.ringNo !== undefined && input.ringNo !== ringNo) {
         const newRingNo = input.ringNo.trim();
         if (!validRingNos.has(newRingNo)) return sendJson(res, 400, { error: "足环号不存在" });
         if (event.results.some(r => r.ringNo === newRingNo)) return sendJson(res, 409, { error: "该足环号已有成绩" });
         event.results[resultIndex].ringNo = newRingNo;
+        ringChanged = true;
       }
       if (input.returnTime !== undefined) event.results[resultIndex].returnTime = input.returnTime || "";
       if (input.rank !== undefined) event.results[resultIndex].rank = Number(input.rank || 0);
+      const currentRingNo = event.results[resultIndex].ringNo;
+      if (ringChanged) {
+        removeRaceFromPigeonByEvent(db, event, oldRingNo);
+      }
+      syncRaceResultToPigeon(db, event, currentRingNo);
       await saveDb(db);
-      return sendJson(res, 200, event.results[resultIndex]);
+      return sendJson(res, 200, { ...event.results[resultIndex], ringChanged, synced: true });
     }
     if (singleResultMatch && req.method === "DELETE") {
       const eventId = decodeURIComponent(singleResultMatch[1]);
@@ -4242,8 +4441,9 @@ const server = http.createServer(async (req, res) => {
       const resultIndex = event.results.findIndex(r => r.ringNo === ringNo);
       if (resultIndex === -1) return sendJson(res, 404, { error: "result_not_found" });
       event.results.splice(resultIndex, 1);
+      removeRaceFromPigeonByEvent(db, event, ringNo);
       await saveDb(db);
-      return sendJson(res, 200, { success: true });
+      return sendJson(res, 200, { success: true, synced: true });
     }
     const raceEventMatch = url.pathname.match(/^\/api\/race-events\/([^/]+)$/);
     if (raceEventMatch && req.method === "GET") {
@@ -4257,20 +4457,29 @@ const server = http.createServer(async (req, res) => {
       const eventId = decodeURIComponent(raceEventMatch[1]);
       const event = db.raceEvents.find(e => e.id === eventId);
       if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
+      const oldEventInfo = { name: event.name, date: event.date, distance: event.distance, results: [...event.results] };
       const input = await body(req);
       if (input.name !== undefined) event.name = input.name.trim() || event.name;
       if (input.date !== undefined) event.date = input.date || event.date;
       if (input.distance !== undefined) event.distance = Number(input.distance || 0);
+      const newEventInfo = { name: event.name, date: event.date, distance: event.distance };
+      const syncResult = updateEventInfoInPigeonRaces(db, oldEventInfo, newEventInfo);
       await saveDb(db);
-      return sendJson(res, 200, event);
+      return sendJson(res, 200, { ...event, syncedPigeons: syncResult.updated });
     }
     if (raceEventMatch && req.method === "DELETE") {
       const eventId = decodeURIComponent(raceEventMatch[1]);
       const index = db.raceEvents.findIndex(e => e.id === eventId);
       if (index === -1) return sendJson(res, 404, { error: "race_event_not_found" });
+      const event = db.raceEvents[index];
+      const removedFromPigeons = [];
+      event.results.forEach(r => {
+        const result = removeRaceFromPigeonByEvent(db, event, r.ringNo);
+        if (result.success) removedFromPigeons.push(r.ringNo);
+      });
       db.raceEvents.splice(index, 1);
       await saveDb(db);
-      return sendJson(res, 200, { success: true });
+      return sendJson(res, 200, { success: true, removedFromPigeons: removedFromPigeons.length });
     }
     const pigeonRaceResultsMatch = url.pathname.match(/^\/api\/pigeons\/(.+)\/race-results$/);
     if (pigeonRaceResultsMatch && req.method === "GET") {

@@ -1,6 +1,32 @@
 {
   "pigeons": [
     {
+      "ringNo": "TEMP-RING-1781921495954",
+      "owner": "临时鸽主",
+      "color": "灰",
+      "loft": "临时棚",
+      "vaccines": [],
+      "transfers": [],
+      "races": []
+    },
+    {
+      "ringNo": "TEMP-RING-1781921296123",
+      "owner": "临时鸽主",
+      "color": "灰",
+      "loft": "临时棚",
+      "vaccines": [],
+      "transfers": [],
+      "races": [
+        {
+          "date": "2026-06-20",
+          "event": "同步测试赛事",
+          "distance": 300,
+          "returnTime": "09:45",
+          "rank": 5
+        }
+      ]
+    },
+    {
       "ringNo": "CHN-2026-001",
       "owner": "北岸棚",
       "fatherRing": "CHN-2022-188",
@@ -72,5 +98,47 @@
     }
   ],
   "breedingPlans": [],
-  "raceEvents": []
+  "raceEvents": [
+    {
+      "id": "1781921296087",
+      "name": "同步测试赛事",
+      "date": "2026-06-20",
+      "distance": 300,
+      "results": [
+        {
+          "ringNo": "CHN-2022-188",
+          "returnTime": "09:32",
+          "rank": 2
+        },
+        {
+          "ringNo": "TEMP-RING-1781921296123",
+          "returnTime": "09:45",
+          "rank": 5
+        }
+      ]
+    },
+    {
+      "id": "1781921223000",
+      "name": "同步测试赛事",
+      "date": "2026-06-20",
+      "distance": 300,
+      "results": [
+        {
+          "ringNo": "CHN-2026-001",
+          "returnTime": "09:30",
+          "rank": 1
+        },
+        {
+          "ringNo": "CHN-2022-188",
+          "returnTime": "09:35",
+          "rank": 2
+        },
+        {
+          "ringNo": "CHN-2023-512",
+          "returnTime": "09:40",
+          "rank": 3
+        }
+      ]
+    }
+  ]
 }
