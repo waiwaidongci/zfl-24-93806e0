@@ -787,6 +787,80 @@ function updateEventInfoInPigeonRaces(db, oldEvent, newEvent) {
   return { updated };
 }
 
+function detectRankConflicts(event) {
+  const results = event.results || [];
+  const conflicts = [];
+  const rankGroups = new Map();
+  const validRanks = [];
+
+  results.forEach(r => {
+    const rank = Number(r.rank || 0);
+    if (rank > 0) {
+      validRanks.push({ ...r, rank });
+      if (!rankGroups.has(rank)) {
+        rankGroups.set(rank, []);
+      }
+      rankGroups.get(rank).push(r.ringNo);
+    }
+  });
+
+  rankGroups.forEach((ringNos, rank) => {
+    if (ringNos.length > 1) {
+      conflicts.push({
+        type: "duplicate_rank",
+        rank,
+        ringNos,
+        message: `第${rank}名有${ringNos.length}只鸽子并列`
+      });
+    }
+  });
+
+  const sortedRanks = [...rankGroups.keys()].sort((a, b) => a - b);
+  if (sortedRanks.length >= 2) {
+    for (let i = 1; i < sortedRanks.length; i++) {
+      if (sortedRanks[i] - sortedRanks[i - 1] > 1) {
+        conflicts.push({
+          type: "rank_gap",
+          fromRank: sortedRanks[i - 1],
+          toRank: sortedRanks[i],
+          missingCount: sortedRanks[i] - sortedRanks[i - 1] - 1,
+          message: `第${sortedRanks[i - 1]}名到第${sortedRanks[i]}名之间有${sortedRanks[i] - sortedRanks[i - 1] - 1}个空缺名次`
+        });
+      }
+    }
+  }
+
+  const noRankCount = results.filter(r => !r.rank || Number(r.rank) <= 0).length;
+  if (noRankCount > 0) {
+    conflicts.push({
+      type: "no_rank",
+      count: noRankCount,
+      message: `有${noRankCount}只鸽子没有有效名次`
+    });
+  }
+
+  const totalParticipants = results.length;
+  const maxRank = sortedRanks.length > 0 ? sortedRanks[sortedRanks.length - 1] : 0;
+  if (maxRank > totalParticipants) {
+    conflicts.push({
+      type: "rank_exceeds_participants",
+      maxRank,
+      totalParticipants,
+      message: `最高名次${maxRank}超过参赛总数${totalParticipants}`
+    });
+  }
+
+  return {
+    totalResults: results.length,
+    validRankCount: validRanks.length,
+    noRankCount,
+    maxRank,
+    minRank: sortedRanks.length > 0 ? sortedRanks[0] : null,
+    conflicts,
+    hasConflicts: conflicts.length > 0
+  };
+}
+
 const PEDIGREE_ISSUE_TYPES = {
   MISSING_PARENT: "missing_parent",
   SAME_PARENTS: "same_parents",
@@ -4401,8 +4475,9 @@ const server = http.createServer(async (req, res) => {
         syncedRingNos.push(r.ringNo);
       });
       syncedRingNos.forEach(ringNo => syncRaceResultToPigeon(db, event, ringNo));
+      const rankConflicts = detectRankConflicts(event);
       await saveDb(db);
-      return sendJson(res, 200, { success: true, added, updated, invalidRings, synced: syncedRingNos.length, event });
+      return sendJson(res, 200, { success: true, added, updated, invalidRings, synced: syncedRingNos.length, rankConflicts, event });
     }
     const singleResultMatch = url.pathname.match(/^\/api\/race-events\/([^/]+)\/results\/(.+)$/);
     if (singleResultMatch && req.method === "PUT") {
@@ -4451,7 +4526,8 @@ const server = http.createServer(async (req, res) => {
       const event = db.raceEvents.find(e => e.id === eventId);
       if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
       const stats = calculateRaceStats(event, db.pigeons);
-      return sendJson(res, 200, { ...event, stats });
+      const rankConflicts = detectRankConflicts(event);
+      return sendJson(res, 200, { ...event, stats, rankConflicts });
     }
     if (raceEventMatch && req.method === "PUT") {
       const eventId = decodeURIComponent(raceEventMatch[1]);
@@ -4488,6 +4564,33 @@ const server = http.createServer(async (req, res) => {
       if (!pigeon) return sendJson(res, 404, { error: "pigeon_not_found" });
       const results = getPigeonRaceResults(db, ringNo);
       return sendJson(res, 200, results);
+    }
+    const rankConflictsMatch = url.pathname.match(/^\/api\/race-events\/(.+)\/rank-conflicts$/);
+    if (rankConflictsMatch && req.method === "GET") {
+      const eventId = decodeURIComponent(rankConflictsMatch[1]);
+      const event = db.raceEvents.find(e => e.id === eventId);
+      if (!event) return sendJson(res, 404, { error: "race_event_not_found" });
+      const conflicts = detectRankConflicts(event);
+      return sendJson(res, 200, conflicts);
+    }
+    if (req.method === "GET" && url.pathname === "/api/race-events/rank-conflicts/all") {
+      const allConflicts = [];
+      db.raceEvents.forEach(event => {
+        const result = detectRankConflicts(event);
+        if (result.hasConflicts) {
+          allConflicts.push({
+            eventId: event.id,
+            eventName: event.name,
+            eventDate: event.date,
+            ...result
+          });
+        }
+      });
+      return sendJson(res, 200, {
+        totalEvents: db.raceEvents.length,
+        eventsWithConflicts: allConflicts.length,
+        conflicts: allConflicts
+      });
     }
     if (req.method === "GET" && url.pathname === "/api/backup/export") {
       const exportData = {

@@ -269,7 +269,7 @@ async function test() {
   const result1AfterDel = eventAfterDel.data.results.find(r => r.ringNo === testRingNo1);
   assert(result1AfterDel === undefined, "赛事中对应成绩已被删除");
 
-  console.log("\n--- 14. 名次冲突（同场赛事同名次）---");
+  console.log("\n--- 14. 名次冲突检测 - 并列名次 ---");
   const rankConflictRes = await api("POST", `/api/race-events/${testEventId}/results`, {
     results: [
       { ringNo: testRingNo1, returnTime: "09:30", rank: 2 },
@@ -277,10 +277,74 @@ async function test() {
     ],
     overwrite: false
   });
+  assert(rankConflictRes.status === 200, "添加并列名次成绩返回 200");
+  assert(rankConflictRes.data.rankConflicts !== undefined, "返回名次冲突检测结果");
 
-  const eventDetail = await api("GET", `/api/race-events/${testEventId}`);
-  const rank2Count = eventDetail.data.results.filter(r => r.rank === 2).length;
-  assert(rank2Count >= 1, "同一场赛事允许存在并列名次（名次冲突不报错）");
+  const dupRankConflict = rankConflictRes.data.rankConflicts.conflicts.find(c => c.type === "duplicate_rank");
+  assert(dupRankConflict !== undefined, "检测到并列名次冲突");
+  assert(dupRankConflict.rank === 2, "并列名次为第2名");
+  assert(dupRankConflict.ringNos.length >= 2, "至少有2只鸽子并列");
+
+  console.log("\n--- 15. 名次冲突检测 - 名次跳跃 ---");
+  const gapEventRes = await api("POST", "/api/race-events", {
+    name: "名次跳跃测试赛",
+    date: "2026-06-22",
+    distance: 250
+  });
+  const gapEventId = gapEventRes.data.id;
+
+  await api("POST", `/api/race-events/${gapEventId}/results`, {
+    results: [
+      { ringNo: testRingNo1, returnTime: "09:00", rank: 1 },
+      { ringNo: testRingNo2, returnTime: "09:30", rank: 3 }
+    ],
+    overwrite: false
+  });
+
+  const gapEventDetail = await api("GET", `/api/race-events/${gapEventId}`);
+  const gapConflict = gapEventDetail.data.rankConflicts.conflicts.find(c => c.type === "rank_gap");
+  assert(gapConflict !== undefined, "检测到名次跳跃冲突");
+  assert(gapConflict.fromRank === 1, "从第1名开始跳跃");
+  assert(gapConflict.toRank === 3, "跳跃到第3名");
+  assert(gapConflict.missingCount === 1, "空缺1个名次");
+
+  console.log("\n--- 16. 名次冲突检测 - 无名次记录 ---");
+  const noRankRes = await api("POST", `/api/race-events/${gapEventId}/results`, {
+    results: [
+      { ringNo: testRingNo3, returnTime: "", rank: 0 }
+    ],
+    overwrite: false
+  });
+  const noRankConflict = noRankRes.data.rankConflicts.conflicts.find(c => c.type === "no_rank");
+  assert(noRankConflict !== undefined, "检测到无名次记录");
+  assert(noRankConflict.count === 1, "有1条无名次记录");
+
+  console.log("\n--- 17. 名次冲突检测 - 名次超过参赛数 ---");
+  const exceedRankRes = await api("POST", `/api/race-events/${gapEventId}/results`, {
+    results: [
+      { ringNo: testRingNo1, returnTime: "09:00", rank: 100 }
+    ],
+    overwrite: true
+  });
+  const exceedConflict = exceedRankRes.data.rankConflicts.conflicts.find(c => c.type === "rank_exceeds_participants");
+  assert(exceedConflict !== undefined, "检测到名次超过参赛数的冲突");
+  assert(exceedConflict.maxRank === 100, "最高名次为100");
+
+  console.log("\n--- 18. 单赛事名次冲突检测API ---");
+  const singleConflictRes = await api("GET", `/api/race-events/${gapEventId}/rank-conflicts`);
+  assert(singleConflictRes.status === 200, "单赛事名次冲突检测API返回 200");
+  assert(singleConflictRes.data.totalResults >= 1, "返回总结果数");
+  assert(singleConflictRes.data.hasConflicts === true, "标记存在冲突");
+  assert(Array.isArray(singleConflictRes.data.conflicts), "conflicts 为数组");
+
+  console.log("\n--- 19. 全赛事名次冲突总览API ---");
+  const allConflictsRes = await api("GET", "/api/race-events/rank-conflicts/all");
+  assert(allConflictsRes.status === 200, "全赛事名次冲突总览API返回 200");
+  assert(allConflictsRes.data.totalEvents >= 2, "至少有2个赛事");
+  assert(allConflictsRes.data.eventsWithConflicts >= 1, "至少有1个赛事有冲突");
+  assert(Array.isArray(allConflictsRes.data.conflicts), "conflicts 为数组");
+
+  await api("DELETE", `/api/race-events/${gapEventId}`);
 
   console.log("\n--- 15. 删除赛事 → 同步移除所有鸽只对应races ---");
   const pigeon2BeforeEventDel = await getPigeon(testRingNo2);
