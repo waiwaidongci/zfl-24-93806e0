@@ -3,6 +3,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  parseCsv,
+  validateImport,
+  buildPreviewResult,
+  buildCommitResult,
+  getImportTemplateCsv,
+  getImportSampleCsv
+} from "./import-utils.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = join(__dirname, "data", "pigeons.json");
@@ -281,49 +289,6 @@ function buildPedigree(db, ringNo, upLevel, downLevel) {
       maxNodes: PEDIGREE_MAX_NODES_PER_REQUEST
     }
   };
-}
-function parseCsv(text) {
-  const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
-  if (lines.length === 0) return [];
-  const headers = lines[0].split(",").map(h => h.trim().toLowerCase());
-  const fieldMap = {
-    "足环号": "ringNo", "环号": "ringNo", "ringno": "ringNo", "ring_no": "ringNo", "ring-no": "ringNo",
-    "鸽主": "owner", "owner": "owner",
-    "父环号": "fatherRing", "父鸽环号": "fatherRing", "父亲环号": "fatherRing", "fatherring": "fatherRing", "father_ring": "fatherRing", "father-ring": "fatherRing",
-    "母环号": "motherRing", "母鸽环号": "motherRing", "母亲环号": "motherRing", "motherring": "motherRing", "mother_ring": "motherRing", "mother-ring": "motherRing",
-    "羽色": "color", "color": "color",
-    "棚号": "loft", "出生棚": "loft", "出生棚号": "loft", "loft": "loft"
-  };
-  const cols = headers.map(h => fieldMap[h] || null);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cells = lines[i].split(",").map(c => c.trim());
-    const row = {};
-    cols.forEach((col, idx) => {
-      if (col && cells[idx] !== undefined) row[col] = cells[idx];
-    });
-    rows.push({ _line: i + 1, _raw: lines[i], ...row });
-  }
-  return rows;
-}
-function validateImport(db, rows) {
-  const existingRingNos = new Set(db.pigeons.map(p => p.ringNo));
-  const seenInBatch = new Map();
-  const result = [];
-  const required = ["ringNo", "owner", "color", "loft"];
-  rows.forEach(row => {
-    const errors = [];
-    required.forEach(f => {
-      if (!row[f] || row[f].trim() === "") errors.push(`缺少${{ringNo:"足环号",owner:"鸽主",color:"羽色",loft:"棚号"}[f]}`);
-    });
-    if (row.ringNo) {
-      if (existingRingNos.has(row.ringNo)) errors.push("足环号已存在");
-      if (seenInBatch.has(row.ringNo)) errors.push("批次内重复");
-      else seenInBatch.set(row.ringNo, row._line);
-    }
-    result.push({ ...row, _valid: errors.length === 0, _errors: errors });
-  });
-  return result;
 }
 
 function getAllAncestors(db, ringNo, visited = new Set()) {
@@ -4687,40 +4652,27 @@ const server = http.createServer(async (req, res) => {
       const csvText = (input.csv || "").toString();
       const rows = parseCsv(csvText);
       const validated = validateImport(db, rows);
-      const total = validated.length;
-      const valid = validated.filter(r => r._valid).length;
-      const invalid = total - valid;
-      const duplicates = validated.filter(r => r._errors.some(e => e.includes("重复") || e.includes("已存在"))).length;
-      return sendJson(res, 200, { total, valid, invalid, duplicates, rows: validated });
+      return sendJson(res, 200, buildPreviewResult(validated));
     }
     if (req.method === "POST" && url.pathname === "/api/pigeons/import/commit") {
       const input = await body(req);
       const csvText = (input.csv || "").toString();
       const rows = parseCsv(csvText);
       const validated = validateImport(db, rows);
-      const successRows = [];
-      const failedRows = [];
-      validated.forEach(row => {
-        if (row._valid) {
-          const pigeon = {
-            ringNo: row.ringNo,
-            owner: row.owner,
-            fatherRing: row.fatherRing || "",
-            motherRing: row.motherRing || "",
-            color: row.color,
-            loft: row.loft,
-            vaccines: [],
-            transfers: [],
-            races: []
-          };
-          db.pigeons.unshift(pigeon);
-          successRows.push({ line: row._line, ringNo: row.ringNo });
-        } else {
-          failedRows.push({ line: row._line, ringNo: row.ringNo || "(无)", errors: row._errors });
-        }
+      const result = buildCommitResult(db, validated);
+      if (result.success > 0) await saveDb(db);
+      return sendJson(res, 200, result);
+    }
+    if (req.method === "GET" && url.pathname === "/api/pigeons/import/template") {
+      const filename = `pigeon-import-template-${localDateString()}.csv`;
+      res.writeHead(200, {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="${filename}"`
       });
-      if (successRows.length > 0) await saveDb(db);
-      return sendJson(res, 200, { success: successRows.length, failed: failedRows.length, successRows, failedRows });
+      return res.end(getImportTemplateCsv());
+    }
+    if (req.method === "GET" && url.pathname === "/api/pigeons/import/sample") {
+      return sendJson(res, 200, { csv: getImportSampleCsv() });
     }
     if (req.method === "GET" && url.pathname === "/api/breeding-plans") {
       const enriched = db.breedingPlans.map(plan => {
