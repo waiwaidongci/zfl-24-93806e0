@@ -697,6 +697,233 @@ function calculateRaceStats(event, pigeons) {
   return stats;
 }
 
+const PEDIGREE_ISSUE_TYPES = {
+  MISSING_PARENT: "missing_parent",
+  SAME_PARENTS: "same_parents",
+  SELF_AS_PARENT: "self_as_parent",
+  RACE_NOT_SYNCED: "race_not_synced"
+};
+
+const PEDIGREE_ISSUE_LABELS = {
+  missing_parent: "缺失父母档案",
+  same_parents: "父母相同",
+  self_as_parent: "自己作为父母",
+  race_not_synced: "赛事成绩未同步"
+};
+
+function scanPedigreeIssues(db) {
+  const issues = [];
+  const pigeonRingSet = new Set(db.pigeons.map(p => p.ringNo));
+
+  db.pigeons.forEach(pigeon => {
+    const ringNo = pigeon.ringNo;
+
+    if (pigeon.fatherRing && !pigeonRingSet.has(pigeon.fatherRing)) {
+      issues.push({
+        id: `${ringNo}_father_missing`,
+        type: PEDIGREE_ISSUE_TYPES.MISSING_PARENT,
+        ringNo,
+        parentType: "father",
+        parentRing: pigeon.fatherRing,
+        message: `父鸽 ${pigeon.fatherRing} 未在档案中登记`,
+        detail: { parentType: "father", parentRing: pigeon.fatherRing }
+      });
+    }
+    if (pigeon.motherRing && !pigeonRingSet.has(pigeon.motherRing)) {
+      issues.push({
+        id: `${ringNo}_mother_missing`,
+        type: PEDIGREE_ISSUE_TYPES.MISSING_PARENT,
+        ringNo,
+        parentType: "mother",
+        parentRing: pigeon.motherRing,
+        message: `母鸽 ${pigeon.motherRing} 未在档案中登记`,
+        detail: { parentType: "mother", parentRing: pigeon.motherRing }
+      });
+    }
+
+    if (pigeon.fatherRing && pigeon.motherRing && pigeon.fatherRing === pigeon.motherRing) {
+      issues.push({
+        id: `${ringNo}_same_parents`,
+        type: PEDIGREE_ISSUE_TYPES.SAME_PARENTS,
+        ringNo,
+        message: `父鸽和母鸽相同：${pigeon.fatherRing}`,
+        detail: { fatherRing: pigeon.fatherRing, motherRing: pigeon.motherRing }
+      });
+    }
+
+    if (pigeon.fatherRing === ringNo) {
+      issues.push({
+        id: `${ringNo}_self_father`,
+        type: PEDIGREE_ISSUE_TYPES.SELF_AS_PARENT,
+        ringNo,
+        parentType: "father",
+        message: "不能将自己作为父鸽",
+        detail: { parentType: "father" }
+      });
+    }
+    if (pigeon.motherRing === ringNo) {
+      issues.push({
+        id: `${ringNo}_self_mother`,
+        type: PEDIGREE_ISSUE_TYPES.SELF_AS_PARENT,
+        ringNo,
+        parentType: "mother",
+        message: "不能将自己作为母鸽",
+        detail: { parentType: "mother" }
+      });
+    }
+
+    const eventRaces = getPigeonRaceResults(db, ringNo);
+    const pigeonRaces = pigeon.races || [];
+    if (eventRaces.length > 0) {
+      const matchedRaces = new Set();
+      pigeonRaces.forEach(pr => {
+        eventRaces.forEach(er => {
+          if (pr.event === er.eventName && pr.date === er.date && Math.abs(pr.distance - er.distance) < 0.1) {
+            matchedRaces.add(`${er.eventId}_${er.date}`);
+          }
+        });
+      });
+      eventRaces.forEach(er => {
+        const key = `${er.eventId}_${er.date}`;
+        if (!matchedRaces.has(key)) {
+          issues.push({
+            id: `${ringNo}_race_${er.eventId}_${er.date}`,
+            type: PEDIGREE_ISSUE_TYPES.RACE_NOT_SYNCED,
+            ringNo,
+            eventId: er.eventId,
+            message: `赛事「${er.eventName}」成绩未同步到鸽只档案`,
+            detail: {
+              eventId: er.eventId,
+              eventName: er.eventName,
+              date: er.date,
+              distance: er.distance,
+              returnTime: er.returnTime,
+              rank: er.rank
+            }
+          });
+        }
+      });
+    }
+  });
+
+  const summary = {
+    total: issues.length,
+    byType: {}
+  };
+  Object.values(PEDIGREE_ISSUE_TYPES).forEach(type => {
+    summary.byType[type] = issues.filter(i => i.type === type).length;
+  });
+
+  return { issues, summary, typeLabels: PEDIGREE_ISSUE_LABELS };
+}
+
+function fixPedigreeIssue(db, input) {
+  const { issueId, type, ringNo, detail } = input;
+  if (!issueId || !type || !ringNo) {
+    return { success: false, error: "参数不完整" };
+  }
+
+  const pigeon = db.pigeons.find(p => p.ringNo === ringNo);
+  if (!pigeon) {
+    return { success: false, error: "鸽只不存在" };
+  }
+
+  switch (type) {
+    case PEDIGREE_ISSUE_TYPES.MISSING_PARENT: {
+      const parentType = detail?.parentType;
+      const parentRing = detail?.parentRing;
+      if (!parentType || !parentRing) {
+        return { success: false, error: "缺少父母信息" };
+      }
+      const existingParent = db.pigeons.find(p => p.ringNo === parentRing);
+      if (existingParent) {
+        return { success: false, error: "父母档案已存在，无需创建" };
+      }
+      const newParent = {
+        ringNo: parentRing,
+        owner: "",
+        fatherRing: "",
+        motherRing: "",
+        color: "",
+        loft: "",
+        vaccines: [],
+        transfers: [],
+        races: []
+      };
+      db.pigeons.unshift(newParent);
+      return {
+        success: true,
+        message: `已创建${parentType === "father" ? "父" : "母"}鸽档案：${parentRing}`,
+        action: "create_parent"
+      };
+    }
+
+    case PEDIGREE_ISSUE_TYPES.SAME_PARENTS: {
+      pigeon.motherRing = "";
+      return {
+        success: true,
+        message: "已清空母鸽环号，消除父母相同问题",
+        action: "clear_mother"
+      };
+    }
+
+    case PEDIGREE_ISSUE_TYPES.SELF_AS_PARENT: {
+      const parentType = detail?.parentType;
+      if (!parentType) {
+        return { success: false, error: "缺少父母类型信息" };
+      }
+      if (parentType === "father") {
+        pigeon.fatherRing = "";
+      } else {
+        pigeon.motherRing = "";
+      }
+      return {
+        success: true,
+        message: `已清空${parentType === "father" ? "父" : "母"}鸽环号，消除自己作为父母问题`,
+        action: "clear_self_parent"
+      };
+    }
+
+    case PEDIGREE_ISSUE_TYPES.RACE_NOT_SYNCED: {
+      const { eventId, eventName, date, distance, returnTime, rank } = detail || {};
+      if (!eventId) {
+        return { success: false, error: "缺少赛事信息" };
+      }
+      const event = db.raceEvents.find(e => e.id === eventId);
+      if (!event) {
+        return { success: false, error: "赛事不存在" };
+      }
+      const eventResult = event.results.find(r => r.ringNo === ringNo);
+      if (!eventResult) {
+        return { success: false, error: "赛事中无该鸽只成绩" };
+      }
+      if (!pigeon.races) pigeon.races = [];
+      const raceEntry = {
+        date: event.date,
+        event: event.name,
+        distance: event.distance,
+        returnTime: eventResult.returnTime || "",
+        rank: Number(eventResult.rank || 0)
+      };
+      const isDuplicate = pigeon.races.some(r =>
+        r.event === raceEntry.event && r.date === raceEntry.date && Math.abs(r.distance - raceEntry.distance) < 0.1
+      );
+      if (!isDuplicate) {
+        pigeon.races.push(raceEntry);
+      }
+      return {
+        success: true,
+        message: `已同步赛事「${event.name}」成绩到鸽只档案`,
+        action: "sync_race",
+        syncedRace: raceEntry
+      };
+    }
+
+    default:
+      return { success: false, error: "未知问题类型" };
+  }
+}
+
 function getPigeonRaceStats(db, ringNo) {
   const results = getPigeonRaceResults(db, ringNo);
   const stats = {
@@ -970,10 +1197,26 @@ const page = `<!doctype html>
     .queue-footer { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-top:14px; padding-top:14px; border-top:1px solid var(--line); flex-wrap:wrap; }
     .queue-footer-actions { display:flex; gap:8px; flex-wrap:wrap; }
     @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} .relation{grid-template-columns:1fr;} .import-stats{grid-template-columns:repeat(2,1fr);} .filter-grid{grid-template-columns:1fr 1px 1fr;} .breeding-grid{grid-template-columns:1fr;} .race-grid{grid-template-columns:1fr;} .race-edit-form{grid-template-columns:1fr;} .pedigree-row.level-2{grid-template-columns:repeat(2,1fr);} .queue-summary{grid-template-columns:repeat(2,1fr);} }
+    .issue-item { background:#fff; border:1px solid var(--line); border-radius:8px; padding:12px 14px; margin-top:8px; }
+    .issue-item-header { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; }
+    .issue-type-badge { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+    .issue-type-badge.missing_parent { background:#fff3e0; color:#e67e22; border:1px solid #ffe0b2; }
+    .issue-type-badge.same_parents { background:#ffebee; color:#c62828; border:1px solid #ffcdd2; }
+    .issue-type-badge.self_as_parent { background:#fce4ec; color:#ad1457; border:1px solid #f8bbd0; }
+    .issue-type-badge.race_not_synced { background:#e3f2fd; color:#1565c0; border:1px solid #bbdefb; }
+    .issue-ring { font-weight:700; font-size:14px; }
+    .issue-message { color:var(--muted); font-size:13px; margin-top:6px; line-height:1.6; }
+    .issue-actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+    .issue-fix-btn { background:var(--accent); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:13px; cursor:pointer; font-weight:600; }
+    .issue-fix-btn:hover { opacity:0.9; }
+    .issue-fix-btn:disabled { opacity:0.5; cursor:not-allowed; }
+    .issue-detail-tag { display:inline-block; background:#f5f8fa; border:1px solid var(--line); border-radius:4px; padding:2px 8px; font-size:12px; margin-right:6px; margin-top:4px; color:#555; }
+    .fix-success-msg { background:#e8f5e9; border:1px solid #a5d6a7; color:#2e7d32; border-radius:6px; padding:8px 12px; margin-top:8px; font-size:13px; }
+    .fix-error-msg { background:#ffebee; border:1px solid #ef9a9a; color:#c62828; border-radius:6px; padding:8px 12px; margin-top:8px; font-size:13px; }
   </style>
 </head>
 <body>
-  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="syncQueueBtn" class="secondary sync-queue-btn">离线队列<span class="badge" id="syncQueueBadge" style="display:none;">0</span></button><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
+  <header><div><h1>赛鸽血统环号登记站</h1><div class="meta">档案、血统、疫苗、转让和归巢成绩</div></div><div class="header-actions"><button id="syncQueueBtn" class="secondary sync-queue-btn">离线队列<span class="badge" id="syncQueueBadge" style="display:none;">0</span></button><button id="pedigreeReviewBtn" class="secondary">血统一致性审查</button><button id="pedigreeBtn" class="secondary">血统树</button><button id="raceBtn" class="secondary">赛事成绩</button><button id="breedingBtn" class="secondary">配对计划</button><button id="importBtn" class="secondary">批量导入</button><button id="backupBtn" class="secondary">数据备份</button><button id="reload">刷新</button></div></header>
   <main>
     <form id="form">
       <h2>创建鸽只档案</h2>
@@ -1365,6 +1608,38 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
             </div>
           </div>
           <div id="restorePreviewArea" style="margin-top:18px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="pedigreeReviewModal" style="display:none;">
+    <div class="modal-backdrop">
+      <div class="modal" style="max-width:1100px;">
+        <div class="modal-header">
+          <h2>血统一致性审查</h2>
+          <div style="display:flex; gap:8px;">
+            <button id="reScanPedigree" class="secondary">重新审查</button>
+            <button id="closePedigreeReview" class="secondary">关闭</button>
+          </div>
+        </div>
+        <div id="pedigreeReviewLoading" style="display:none; text-align:center; padding:40px;">审查中...</div>
+        <div id="pedigreeReviewContent">
+          <div class="queue-summary" id="pedigreeSummary"></div>
+          <div class="queue-tabs" id="pedigreeTypeTabs"></div>
+          <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <label style="font-size:13px;">按足环号筛选</label>
+            <input id="pedigreeFilterRing" placeholder="输入足环号关键字" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px; font-size:13px; flex:1; max-width:260px;">
+            <div style="flex:1;"></div>
+            <span class="hint" id="pedigreeResultCount">共 0 条问题</span>
+          </div>
+          <div id="pedigreeIssueList" class="queue-list" style="margin-top:14px;"></div>
+          <div id="pedigreeFixAllFooter" class="queue-footer" style="display:none;">
+            <div class="hint" id="pedigreeFixAllHint"></div>
+            <div class="queue-footer-actions">
+              <button id="fixCurrentTypeBtn" class="secondary">修复当前筛选类型</button>
+              <button id="fixAllBtn" class="primary">一键修复全部</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -3236,6 +3511,285 @@ CHN-2026-102,南岸棚,,,绛,南岸鸽棚</div>
     };
     load();
     updateQueueBadge();
+
+    const pedigreeReviewModal = document.querySelector("#pedigreeReviewModal");
+    const pedigreeSummaryEl = document.querySelector("#pedigreeSummary");
+    const pedigreeTypeTabsEl = document.querySelector("#pedigreeTypeTabs");
+    const pedigreeIssueListEl = document.querySelector("#pedigreeIssueList");
+    const pedigreeFilterRingEl = document.querySelector("#pedigreeFilterRing");
+    const pedigreeResultCountEl = document.querySelector("#pedigreeResultCount");
+    const pedigreeLoadingEl = document.querySelector("#pedigreeReviewLoading");
+    const pedigreeContentEl = document.querySelector("#pedigreeReviewContent");
+    const pedigreeFixAllFooter = document.querySelector("#pedigreeFixAllFooter");
+    const pedigreeFixAllHint = document.querySelector("#pedigreeFixAllHint");
+    let pedigreeScanResult = null;
+    let currentPedigreeType = "all";
+    let currentPedigreeRingFilter = "";
+
+    const PEDIGREE_FIX_LABELS = {
+      missing_parent: "创建父母档案",
+      same_parents: "清空母鸽环号",
+      self_as_parent: "清空自身父母环号",
+      race_not_synced: "同步成绩到档案"
+    };
+
+    const PEDIGREE_CONFIRM_MESSAGES = {
+      missing_parent: function(issue) { return "将为足环号" + String.fromCharCode(12300) + (issue.detail ? issue.detail.parentRing : "") + String.fromCharCode(12301) + "创建一条基础档案（鸽主、羽色、棚号待补充）。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; },
+      same_parents: function() { return "将清空该鸽只的母鸽环号，以解决父母相同问题。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; },
+      self_as_parent: function(issue) { return "将清空该鸽只的" + (issue.detail && issue.detail.parentType === "father" ? "父" : "母") + "鸽环号，因为这是它自己的足环号。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; },
+      race_not_synced: function(issue) { return "将赛事" + String.fromCharCode(12300) + (issue.detail ? issue.detail.eventName : "") + String.fromCharCode(12301) + "的成绩同步到鸽只档案。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？"; }
+    };
+
+    document.querySelector("#pedigreeReviewBtn").onclick = function() {
+      pedigreeReviewModal.style.display = "block";
+      runPedigreeScan();
+    };
+    document.querySelector("#closePedigreeReview").onclick = function() {
+      pedigreeReviewModal.style.display = "none";
+    };
+    document.querySelector("#reScanPedigree").onclick = function() {
+      runPedigreeScan();
+    };
+    pedigreeFilterRingEl.oninput = function() {
+      currentPedigreeRingFilter = pedigreeFilterRingEl.value.trim();
+      renderPedigreeIssues();
+    };
+
+    async function runPedigreeScan() {
+      pedigreeLoadingEl.style.display = "block";
+      pedigreeContentEl.style.display = "none";
+      try {
+        pedigreeScanResult = await api("/api/pedigree/scan");
+        renderPedigreeSummary();
+        renderPedigreeTypeTabs();
+        renderPedigreeIssues();
+      } catch (e) {
+        pedigreeIssueListEl.innerHTML = '<div class="fix-error-msg">审查失败：' + e.message + '</div>';
+      } finally {
+        pedigreeLoadingEl.style.display = "none";
+        pedigreeContentEl.style.display = "block";
+      }
+    }
+
+    function renderPedigreeSummary() {
+      if (!pedigreeScanResult) return;
+      const s = pedigreeScanResult.summary;
+      const labels = pedigreeScanResult.typeLabels;
+      const typeStatsHtml = Object.keys(labels).map(function(type) {
+        const count = s.byType[type] || 0;
+        const cls = count > 0 ? "warn" : "good";
+        return '<div class="stat ' + cls + '"><div class="num">' + count + '</div><div class="lbl">' + labels[type] + '</div></div>';
+      }).join("");
+      const totalCls = s.total > 0 ? "bad" : "good";
+      pedigreeSummaryEl.innerHTML = '<div class="stat ' + totalCls + '"><div class="num">' + s.total + '</div><div class="lbl">问题总数</div></div>' + typeStatsHtml;
+    }
+
+    function renderPedigreeTypeTabs() {
+      if (!pedigreeScanResult) return;
+      const s = pedigreeScanResult.summary;
+      const labels = pedigreeScanResult.typeLabels;
+      const allTabActive = currentPedigreeType === "all" ? "active" : "";
+      let allTab = '<div class="queue-tab ' + allTabActive + '" data-pedigree-tab="all">全部<span class="count">' + s.total + '</span></div>';
+      const typeTabs = Object.keys(labels).map(function(type) {
+        const count = s.byType[type] || 0;
+        const active = currentPedigreeType === type ? "active" : "";
+        return '<div class="queue-tab ' + active + '" data-pedigree-tab="' + type + '">' + labels[type] + '<span class="count">' + count + '</span></div>';
+      }).join("");
+      pedigreeTypeTabsEl.innerHTML = allTab + typeTabs;
+      pedigreeTypeTabsEl.querySelectorAll("[data-pedigree-tab]").forEach(function(tab) {
+        tab.onclick = function() {
+          currentPedigreeType = tab.dataset.pedigreeTab;
+          renderPedigreeTypeTabs();
+          renderPedigreeIssues();
+        };
+      });
+    }
+
+    function getFilteredIssues() {
+      if (!pedigreeScanResult) return [];
+      let issues = pedigreeScanResult.issues;
+      if (currentPedigreeType !== "all") {
+        issues = issues.filter(function(i) { return i.type === currentPedigreeType; });
+      }
+      if (currentPedigreeRingFilter) {
+        const kw = currentPedigreeRingFilter.toLowerCase();
+        issues = issues.filter(function(i) {
+          return i.ringNo.toLowerCase().includes(kw) ||
+            (i.parentRing && i.parentRing.toLowerCase().includes(kw)) ||
+            (i.message && i.message.toLowerCase().includes(kw));
+        });
+      }
+      return issues;
+    }
+
+    function renderPedigreeIssues() {
+      if (!pedigreeScanResult) return;
+      const labels = pedigreeScanResult.typeLabels;
+      const filtered = getFilteredIssues();
+      pedigreeResultCountEl.textContent = "共 " + filtered.length + " 条问题";
+
+      if (filtered.length === 0) {
+        pedigreeIssueListEl.innerHTML = '<div class="queue-empty">🎉 没有发现问题！</div>';
+        pedigreeFixAllFooter.style.display = "none";
+        return;
+      }
+
+      const allCurrentType = currentPedigreeType !== "all"
+        ? pedigreeScanResult.issues.filter(function(i) { return i.type === currentPedigreeType; }).length
+        : 0;
+
+      if (currentPedigreeType !== "all" && allCurrentType > 0) {
+        pedigreeFixAllFooter.style.display = "flex";
+        pedigreeFixAllHint.innerHTML = '<b>提示：</b>当前筛选类型「' + labels[currentPedigreeType] + '」共 ' + allCurrentType + ' 条待修复。';
+      } else if (currentPedigreeType === "all") {
+        pedigreeFixAllFooter.style.display = "flex";
+        pedigreeFixAllHint.innerHTML = '<b>提示：</b>共 ' + pedigreeScanResult.summary.total + ' 条问题待修复，可一键批量处理。';
+      } else {
+        pedigreeFixAllFooter.style.display = "none";
+      }
+
+      pedigreeIssueListEl.innerHTML = filtered.map(function(issue) {
+        const typeLabel = labels[issue.type] || issue.type;
+        const fixLabel = PEDIGREE_FIX_LABELS[issue.type] || "修复";
+        let detailTags = "";
+        if (issue.type === "missing_parent") {
+          const pt = issue.detail ? issue.detail.parentType : "";
+          const pr = issue.detail ? issue.detail.parentRing : "";
+          detailTags = '<span class="issue-detail-tag">' + (pt === "father" ? "父鸽" : "母鸽") + "：" + pr + '</span>';
+        } else if (issue.type === "same_parents") {
+          const fr = issue.detail ? issue.detail.fatherRing : "";
+          const mr = issue.detail ? issue.detail.motherRing : "";
+          detailTags = '<span class="issue-detail-tag">父鸽：' + fr + '</span><span class="issue-detail-tag">母鸽：' + mr + '</span>';
+        } else if (issue.type === "race_not_synced") {
+          const rankText = issue.detail && issue.detail.rank ? "，第" + issue.detail.rank + "名" : "";
+          const timeText = issue.detail && issue.detail.returnTime ? "，归巢" + issue.detail.returnTime : "";
+          const en = issue.detail ? issue.detail.eventName : "";
+          const dt = issue.detail ? issue.detail.date : "";
+          const ds = issue.detail ? issue.detail.distance : 0;
+          detailTags = '<span class="issue-detail-tag">赛事：' + en + '</span><span class="issue-detail-tag">日期：' + dt + '</span><span class="issue-detail-tag">距离：' + ds + 'km' + rankText + timeText + '</span>';
+        }
+        return '<div class="issue-item" data-issue-id="' + issue.id + '">' +
+          '<div class="issue-item-header">' +
+            '<div>' +
+              '<span class="issue-type-badge ' + issue.type + '">' + typeLabel + '</span>' +
+              '<span style="margin-left:8px;" class="issue-ring">' + issue.ringNo + '</span>' +
+            '</div>' +
+            '<div class="issue-actions">' +
+              '<button class="issue-fix-btn" data-fix-issue="' + issue.id + '">' + fixLabel + '</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="issue-message">' + issue.message + '</div>' +
+          (detailTags ? '<div style="margin-top:6px;">' + detailTags + '</div>' : "") +
+          '<div id="fix-result-' + issue.id + '"></div>' +
+        '</div>';
+      }).join("");
+
+      pedigreeIssueListEl.querySelectorAll("[data-fix-issue]").forEach(function(btn) {
+        btn.onclick = function() { fixIssue(btn.dataset.fixIssue); };
+      });
+    }
+
+    function getConfirmMessage(issue) {
+      const fn = PEDIGREE_CONFIRM_MESSAGES[issue.type];
+      return fn ? fn(issue) : "确定修复此问题吗？";
+    }
+
+    async function fixIssue(issueId) {
+      if (!pedigreeScanResult) return;
+      const issue = pedigreeScanResult.issues.find(function(i) { return i.id === issueId; });
+      if (!issue) return;
+      if (!confirm(getConfirmMessage(issue))) return;
+
+      const btn = document.querySelector('[data-fix-issue="' + issueId + '"]');
+      const resultEl = document.getElementById('fix-result-' + issueId);
+      if (btn) { btn.disabled = true; btn.textContent = "修复中..."; }
+      if (resultEl) resultEl.innerHTML = "";
+
+      try {
+        const result = await api("/api/pedigree/fix", {
+          method: "POST",
+          body: JSON.stringify({
+            issueId: issue.id,
+            type: issue.type,
+            ringNo: issue.ringNo,
+            detail: issue.detail
+          })
+        });
+        if (resultEl) {
+          resultEl.innerHTML = '<div class="fix-success-msg">✓ ' + (result.message || "修复成功") + '</div>';
+        }
+        setTimeout(function() {
+          runPedigreeScan();
+        }, 800);
+      } catch (e) {
+        if (resultEl) {
+          resultEl.innerHTML = '<div class="fix-error-msg">✗ 修复失败：' + e.message + '</div>';
+        }
+        if (btn) { btn.disabled = false; btn.textContent = PEDIGREE_FIX_LABELS[issue.type] || "修复"; }
+      }
+    }
+
+    document.querySelector("#fixCurrentTypeBtn").onclick = async function() {
+      if (!pedigreeScanResult) return;
+      if (currentPedigreeType === "all") { alert("请先选择具体的问题类型"); return; }
+      const toFix = getFilteredIssues();
+      if (toFix.length === 0) return;
+      if (!confirm("将批量修复当前筛选的 " + toFix.length + " 条问题，每条修复前不会单独确认。" + String.fromCharCode(10) + String.fromCharCode(10) + "确定继续吗？")) return;
+      await bulkFixIssues(toFix);
+    };
+
+    document.querySelector("#fixAllBtn").onclick = async function() {
+      if (!pedigreeScanResult) return;
+      const toFix = getFilteredIssues();
+      if (toFix.length === 0) return;
+      if (!confirm("将批量修复当前显示的 " + toFix.length + " 条问题，每条修复前不会单独确认。" + String.fromCharCode(10) + String.fromCharCode(10) + "此操作可能修改大量数据，确定继续吗？")) return;
+      await bulkFixIssues(toFix);
+    };
+
+    async function bulkFixIssues(issues) {
+      let success = 0;
+      let failed = 0;
+      const failedDetails = [];
+      for (let i = 0; i < issues.length; i++) {
+        const issue = issues[i];
+        const resultEl = document.getElementById('fix-result-' + issue.id);
+        const btn = document.querySelector('[data-fix-issue="' + issue.id + '"]');
+        if (btn) { btn.disabled = true; btn.textContent = "修复中..."; }
+        try {
+          const result = await api("/api/pedigree/fix", {
+            method: "POST",
+            body: JSON.stringify({
+              issueId: issue.id,
+              type: issue.type,
+              ringNo: issue.ringNo,
+              detail: issue.detail
+            })
+          });
+          success++;
+          if (resultEl) {
+            resultEl.innerHTML = '<div class="fix-success-msg">✓ ' + (result.message || "修复成功") + '</div>';
+          }
+        } catch (e) {
+          failed++;
+          failedDetails.push(issue.ringNo + ": " + e.message);
+          if (resultEl) {
+            resultEl.innerHTML = '<div class="fix-error-msg">✗ 修复失败：' + e.message + '</div>';
+          }
+          if (btn) { btn.disabled = false; btn.textContent = PEDIGREE_FIX_LABELS[issue.type] || "修复"; }
+        }
+      }
+      setTimeout(function() {
+        runPedigreeScan().then(function() {
+          var nl = String.fromCharCode(10);
+          let msg = "批量修复完成：成功 " + success + " 条，失败 " + failed + " 条";
+          if (failedDetails.length > 0) {
+            msg += nl + nl + "失败详情：" + nl + failedDetails.slice(0, 10).join(nl);
+            if (failedDetails.length > 10) msg += nl + "... 还有 " + (failedDetails.length - 10) + " 条";
+          }
+          alert(msg);
+        });
+      }, 800);
+    }
   </script>
 </body>
 </html>`;
@@ -4002,6 +4556,16 @@ const server = http.createServer(async (req, res) => {
         conflict: results.filter(r => r.status === "conflict").length
       };
       return sendJson(res, 200, { results, summary });
+    }
+    if (req.method === "GET" && url.pathname === "/api/pedigree/scan") {
+      const issues = scanPedigreeIssues(db);
+      return sendJson(res, 200, issues);
+    }
+    if (req.method === "POST" && url.pathname === "/api/pedigree/fix") {
+      const input = await body(req);
+      const result = fixPedigreeIssue(db, input);
+      if (result.success) await saveDb(db);
+      return sendJson(res, result.success ? 200 : 400, result);
     }
     sendJson(res, 404, { error: "not_found" });
   } catch (error) {

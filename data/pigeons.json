@@ -1,6 +1,39 @@
 {
   "pigeons": [
     {
+      "ringNo": "TEST-003",
+      "owner": "测试鸽主3",
+      "fatherRing": "",
+      "motherRing": "",
+      "color": "红轮",
+      "loft": "测试棚",
+      "vaccines": [],
+      "transfers": [],
+      "races": []
+    },
+    {
+      "ringNo": "TEST-002",
+      "owner": "测试鸽主2",
+      "fatherRing": "SAME-RING",
+      "motherRing": "",
+      "color": "雨点",
+      "loft": "测试棚",
+      "vaccines": [],
+      "transfers": [],
+      "races": []
+    },
+    {
+      "ringNo": "TEST-001",
+      "owner": "测试鸽主",
+      "fatherRing": "TEST-PARENT",
+      "motherRing": "TEST-MOM",
+      "color": "灰",
+      "loft": "测试棚",
+      "vaccines": [],
+      "transfers": [],
+      "races": []
+    },
+    {
       "ringNo": "CHN-2026-001",
       "owner": "北岸棚",
       "fatherRing": "CHN-2022-188",
@@ -33,6 +66,13 @@
           "distance": 120,
           "returnTime": "10:42",
           "rank": 18
+        },
+        {
+          "date": "2026-06-18",
+          "event": "统计测试赛事",
+          "distance": 200,
+          "returnTime": "09:50",
+          "rank": 0
         }
       ]
     },
@@ -51,7 +91,15 @@
         }
       ],
       "transfers": [],
-      "races": []
+      "races": [
+        {
+          "date": "2026-06-18",
+          "event": "统计测试赛事",
+          "distance": 200,
+          "returnTime": "10:00",
+          "rank": 0
+        }
+      ]
     },
     {
       "ringNo": "CHN-2023-512",
