@@ -121,28 +121,23 @@ const PEDIGREE_DEFAULT_UP_LEVEL = 2;
 const PEDIGREE_DEFAULT_DOWN_LEVEL = 1;
 const PEDIGREE_MAX_NODES_PER_REQUEST = 2000;
 
-function buildTruncatedPedigreeNode(ringNo, level, direction) {
-  return {
-    ringNo: ringNo || "",
-    exists: false,
-    pigeon: null,
-    isCircular: false,
-    circularVia: null,
-    isTruncated: true,
-    level,
-    direction,
-    father: null,
-    mother: null,
-    children: []
-  };
-}
-
 function buildPedigreeNode(db, ringNo, level, direction, maxLevel, visited, path, options, stats) {
-  if (stats.nodesBuilt >= PEDIGREE_MAX_NODES_PER_REQUEST) {
-    return buildTruncatedPedigreeNode(ringNo, level, direction);
-  }
-
   stats.nodesBuilt++;
+  if (stats.nodesBuilt > PEDIGREE_MAX_NODES_PER_REQUEST) {
+    return {
+      ringNo: ringNo || "",
+      exists: false,
+      pigeon: null,
+      isCircular: false,
+      circularVia: null,
+      isTruncated: true,
+      level,
+      direction,
+      father: null,
+      mother: null,
+      children: []
+    };
+  }
 
   const node = {
     ringNo: ringNo || "",
@@ -203,12 +198,7 @@ function buildPedigreeNode(db, ringNo, level, direction, maxLevel, visited, path
 
   if (direction === "down" && level < maxLevel) {
     const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
-    node.children = [];
-    for (const child of children) {
-      if (stats.nodesBuilt >= PEDIGREE_MAX_NODES_PER_REQUEST) {
-        node.children.push(buildTruncatedPedigreeNode("", level + 1, "down"));
-        break;
-      }
+    node.children = children.map(child => {
       const childVisited = new Map(visited);
       const childPath = new Map(path);
       childPath.set("__currentPath__", [...currentPath]);
@@ -222,8 +212,8 @@ function buildPedigreeNode(db, ringNo, level, direction, maxLevel, visited, path
       } else {
         childNode.parentSide = "mother";
       }
-      node.children.push(childNode);
-    }
+      return childNode;
+    });
   }
 
   currentPath.pop();
@@ -260,12 +250,7 @@ function buildPedigree(db, ringNo, upLevel, downLevel) {
     downPath.set("__currentPath__", [ringNo]);
 
     const children = db.pigeons.filter(p => p.fatherRing === ringNo || p.motherRing === ringNo);
-    root.children = [];
-    for (const child of children) {
-      if (stats.nodesBuilt >= PEDIGREE_MAX_NODES_PER_REQUEST) {
-        root.children.push(buildTruncatedPedigreeNode("", 1, "down"));
-        break;
-      }
+    root.children = children.map(child => {
       const childVisited = new Map(downVisited);
       const childPath = new Map(downPath);
       childPath.set("__currentPath__", [ringNo]);
@@ -279,8 +264,8 @@ function buildPedigree(db, ringNo, upLevel, downLevel) {
       } else {
         childNode.parentSide = "mother";
       }
-      root.children.push(childNode);
-    }
+      return childNode;
+    });
   } else {
     root.children = [];
   }
